@@ -153,6 +153,32 @@ async def test_irreversible_action_pauses_and_resumes_with_the_same_thread(
     assert runs[0].ok is True
 
 
+async def test_second_turn_in_a_thread_reroutes_to_the_right_specialist(
+    db: dict[str, str], runtime: Runtime
+) -> None:
+    """A thread that ran a shell request must still be able to delete a task.
+
+    The graph state is checkpointed per thread, so the specialist chosen in turn
+    one used to survive into turn two. Turn two then ran with the executor's tool
+    list, which does not contain task_delete, and the operator got a refusal that
+    blamed "outside content" for what was really a routing leak. Found in the
+    browser, not by the API tests, because each API check used a fresh thread.
+    """
+    created = await runtime.turn(ctx(db), "add task buy milk")
+    assert created.events[0]["ok"] is True
+    async with db_session.session_scope() as session:
+        task_id = (await session.execute(select(Task))).scalars().one().id
+
+    thread = f"thread-reroute-{task_id}"
+    shell_turn = await runtime.turn(ctx(db, thread_id=thread), "run echo hello")
+    assert shell_turn.approval is None
+    assert shell_turn.events[0]["name"] == "shell"
+
+    paused = await runtime.turn(ctx(db, thread_id=thread), f"delete task {task_id}")
+    assert paused.approval is not None, paused.answer
+    assert paused.approval["tool_name"] == "task_delete"
+
+
 async def test_rejected_approval_does_not_execute(db: dict[str, str], runtime: Runtime) -> None:
     await runtime.turn(ctx(db), "add task keep me")
     async with db_session.session_scope() as session:

@@ -50,7 +50,8 @@ def _serializer() -> URLSafeTimedSerializer:
 
 
 def issue_token(user_id: str) -> str:
-    return _serializer().dumps({"uid": user_id})
+    token: str = _serializer().dumps({"uid": user_id})
+    return token
 
 
 def read_token(token: str | None) -> str | None:

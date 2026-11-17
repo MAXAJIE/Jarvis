@@ -1,18 +1,11 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { api, type ApprovalRequest } from "../../lib/api";
-
-interface Pending {
-  approvals: ApprovalRequest[];
-  count: number;
-}
+import { api } from "../../lib/api";
+import { useApprovals } from "../../lib/approvals";
 
 export default function Approvals({ onDecided }: { onDecided: () => void }) {
   const queryClient = useQueryClient();
-  const pending = useQuery({
-    queryKey: ["approvals"],
-    queryFn: () => api<Pending>("/api/approvals"),
-  });
+  const pending = useApprovals();
 
   const decide = useMutation({
     mutationFn: ({ id, decision }: { id: string; decision: "approved" | "rejected" }) =>

@@ -7,6 +7,7 @@ import Chat from "./features/chat/Chat";
 import Dashboard from "./features/dashboard/Dashboard";
 import Tasks from "./features/tasks/Tasks";
 import { ApiError, api, type Identity } from "./lib/api";
+import { useApprovals } from "./lib/approvals";
 
 type Tab = "chat" | "tasks" | "approvals" | "dashboard";
 
@@ -33,15 +34,7 @@ export default function App() {
     },
   });
 
-  const pending = useQuery({
-    queryKey: ["approvals"],
-    queryFn: async () => {
-      const body = await api<{ approvals: unknown[] }>("/api/approvals");
-      return body.approvals.length;
-    },
-    enabled: Boolean(me.data),
-    refetchInterval: 15_000,
-  });
+  const pending = useApprovals(Boolean(me.data));
 
   if (me.isLoading) {
     return <div className="p-6 text-sm text-slate-400">loading…</div>;
@@ -74,7 +67,7 @@ export default function App() {
             type="button"
           >
             {entry.label}
-            {entry.id === "approvals" && pending.data ? ` (${pending.data})` : ""}
+            {entry.id === "approvals" && pending.data?.count ? ` (${pending.data.count})` : ""}
           </button>
         ))}
         <span className="ml-auto text-xs text-slate-500">{me.data.email}</span>

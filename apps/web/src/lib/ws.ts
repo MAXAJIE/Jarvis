@@ -31,13 +31,17 @@ export class ChatSocket {
   constructor(
     private readonly onFrame: Handler,
     private readonly onStatus: StatusHandler,
+    /** Which conversation to reattach to, so a reconnect resumes the transcript. */
+    private readonly resumeId: () => string | null = () => null,
   ) {}
 
   connect(): void {
     this.closedByCaller = false;
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     this.onStatus("connecting");
-    const ws = new WebSocket(`${scheme}://${location.host}/ws/chat`);
+    const id = this.resumeId();
+    const query = id ? `?conversation_id=${encodeURIComponent(id)}` : "";
+    const ws = new WebSocket(`${scheme}://${location.host}/ws/chat${query}`);
     this.ws = ws;
 
     ws.onopen = () => {

@@ -294,7 +294,7 @@ results, not a summary sentence.
 | G4 | New tool: schema test + refusal test + contract fixture exist | file paths |
 | G5 | If it spends money: `cost_ledger` row appears, verified with a SQL query | query + row |
 | G6 | If it has side effects: `tool_runs` row appears on success **and** on forced failure | two rows |
-| G7 | If it is user-visible: Playwright E2E covers it and the E2E passes | test name |
+| G7 | If it is user-visible: driven once in a real browser (login, every tab, one approval approve **and** one reject), or a Playwright E2E when one exists | screenshot / recorded clicks + the defects it found |
 | G8 | If it changes schema: Alembic migration exists, upgrades from empty, and downgrade path documented | migration id |
 | G9 | If it changes the agent graph: eval set re-run, numbers recorded in `DECISIONS.md` | eval table |
 | G10 | `PLANBOOK.md` updated if behaviour deviates from spec | diff |

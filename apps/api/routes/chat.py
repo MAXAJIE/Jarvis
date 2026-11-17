@@ -5,12 +5,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from pydantic import BaseModel
+from sqlalchemy import select
 
 from agent.runtime import Runtime
-from apps.api.auth import COOKIE_NAME, read_token
+from apps.api.auth import COOKIE_NAME, read_token, require_session
 from apps.api.config import get_settings
-from apps.api.db.models import Conversation, User
+from apps.api.db.models import Conversation, Message, User
 from apps.api.db.session import session_scope
 from packages.contracts.tool import Lang, ToolContext, Transport
 
@@ -22,12 +24,73 @@ def _runtime(ws: WebSocket) -> Runtime:
     return runtime
 
 
-async def _open_conversation(user_id: str, lang: str) -> str:
+async def _open_conversation(
+    user_id: str, lang: str, conversation_id: str | None
+) -> tuple[str, str]:
+    """Resume the operator's web conversation, or start a new one.
+
+    Without this the socket opened a fresh conversation on every page load, so
+    switching tabs or reloading silently threw away the visible transcript and
+    reset the language. Only the socket reuses a conversation: a conversation id
+    that does not belong to this user is treated as absent, not as an error, so a
+    stale id in local storage cannot be used to read someone else's turns.
+    """
     async with session_scope() as session:
+        if conversation_id:
+            existing = await session.scalar(
+                select(Conversation).where(
+                    Conversation.id == conversation_id,
+                    Conversation.user_id == user_id,
+                    Conversation.transport == "web",
+                )
+            )
+            if existing is not None:
+                return existing.id, existing.lang
         conversation = Conversation(user_id=user_id, transport="web", lang=lang, mode="text")
         session.add(conversation)
         await session.flush()
-        return conversation.id
+        return conversation.id, lang
+
+
+class MessageView(BaseModel):
+    role: str
+    content: str
+    tainted: bool
+    created_at: str
+
+
+@router.get("/api/chat/history")
+async def history(
+    conversation_id: str, user_id: str = Depends(require_session)
+) -> dict[str, list[MessageView]]:
+    """The transcript the browser should render when it reattaches."""
+    async with session_scope() as session:
+        owned = await session.scalar(
+            select(Conversation.id).where(
+                Conversation.id == conversation_id, Conversation.user_id == user_id
+            )
+        )
+        if owned is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+        rows = (
+            await session.scalars(
+                select(Message)
+                .where(Message.conversation_id == conversation_id)
+                .order_by(Message.created_at)
+            )
+        ).all()
+    return {
+        "messages": [
+            MessageView(
+                role=row.role,
+                content=row.content,
+                tainted=row.tainted,
+                created_at=row.created_at.isoformat(),
+            )
+            for row in rows
+            if row.role in {"user", "assistant"}
+        ]
+    }
 
 
 @router.websocket("/ws/chat")
@@ -44,8 +107,9 @@ async def chat_socket(ws: WebSocket) -> None:
 
     await ws.accept()
     settings = get_settings()
-    lang = "en"
-    conversation_id = await _open_conversation(user_id, lang)
+    conversation_id, lang = await _open_conversation(
+        user_id, "en", ws.query_params.get("conversation_id")
+    )
     await ws.send_json(
         {
             "type": "ready",

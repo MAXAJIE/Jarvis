@@ -16,21 +16,49 @@ interface Bubble {
 
 let nextId = 1;
 
+/** The last conversation this browser talked in; the server owns the transcript. */
+const CONVERSATION_KEY = "jarvis.conversation";
+const LANG_KEY = "jarvis.lang";
+
+function storedConversation(): string | null {
+  try {
+    return window.localStorage.getItem(CONVERSATION_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export default function Chat({ onDecided }: { onDecided: () => void }) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState<"connecting" | "open" | "closed">("connecting");
-  const [lang, setLang] = useState<Lang>("en");
+  const [lang, setLang] = useState<Lang>(() => {
+    try {
+      return window.localStorage.getItem(LANG_KEY) === "zh-TW" ? "zh-TW" : "en";
+    } catch {
+      return "en";
+    }
+  });
   const [mode, setMode] = useState<"typing" | "talking">("typing");
   const [provider, setProvider] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const socketRef = useRef<ChatSocket | null>(null);
+  const langRef = useRef<Lang>(lang);
+  langRef.current = lang;
 
   useEffect(() => {
     const socket = new ChatSocket((frame: ServerFrame) => {
       if (frame.type === "ready") {
         setProvider(frame.provider);
-        setLang(frame.lang === "zh-TW" ? "zh-TW" : "en");
+        const resumed = frame.lang === "zh-TW" ? "zh-TW" : "en";
+        setLang(resumed);
+        try {
+          window.localStorage.setItem(CONVERSATION_KEY, frame.conversation_id);
+          window.localStorage.setItem(LANG_KEY, resumed);
+        } catch {
+          /* storage can be unavailable; the transcript still loads below */
+        }
+        void loadHistory(frame.conversation_id);
         return;
       }
       if (frame.type === "error") {
@@ -47,18 +75,44 @@ export default function Chat({ onDecided }: { onDecided: () => void }) {
           {
             id: nextId++,
             role: "assistant",
-            text: frame.answer || "(no answer)",
+            text:
+              frame.answer ||
+              (frame.approval
+                ? langRef.current === "zh-TW"
+                  ? "等你批准先做。"
+                  : "Waiting for your approval."
+                : "(no answer)"),
             events: frame.events.map((event) => ({ name: event.name, ok: event.ok })),
             approval: frame.approval,
             tainted: frame.tainted,
           },
         ]);
       }
-    }, setStatus);
+    }, setStatus, storedConversation);
     socketRef.current = socket;
     socket.connect();
     return () => socket.close();
   }, []);
+
+  async function loadHistory(conversationId: string) {
+    try {
+      const body = await api<{ messages: { role: string; content: string }[] }>(
+        `/api/chat/history?conversation_id=${encodeURIComponent(conversationId)}`,
+      );
+      if (!body.messages.length) return;
+      setBubbles((current) =>
+        current.length
+          ? current
+          : body.messages.map((message) => ({
+              id: nextId++,
+              role: message.role === "user" ? ("user" as const) : ("assistant" as const),
+              text: message.content,
+            })),
+      );
+    } catch {
+      /* an empty transcript is a fine fallback; do not block the socket */
+    }
+  }
 
   function send() {
     const text = draft.trim();
@@ -71,6 +125,11 @@ export default function Chat({ onDecided }: { onDecided: () => void }) {
 
   function changeLang(next: Lang) {
     setLang(next);
+    try {
+      window.localStorage.setItem(LANG_KEY, next);
+    } catch {
+      /* ignore */
+    }
     socketRef.current?.send({ type: "set_lang", lang: next });
   }
 

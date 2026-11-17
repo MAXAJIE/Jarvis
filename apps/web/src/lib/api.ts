@@ -64,6 +64,35 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * FastAPI returns `detail` as a string for HTTPException and as an array of
+ * validation errors for 422. Rendering the array straight into JSX prints
+ * "[object Object]", which is what an empty login form used to show.
+ */
+async function describeError(response: Response): Promise<string> {
+  const fallback = `${response.status} ${response.statusText}`.trim();
+  try {
+    const body: unknown = await response.json();
+    if (typeof body !== "object" || body === null) return fallback;
+    const detail = (body as { detail?: unknown }).detail;
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      const messages = detail
+        .map((item) => {
+          if (typeof item !== "object" || item === null) return null;
+          const entry = item as { msg?: unknown; loc?: unknown };
+          const where = Array.isArray(entry.loc) ? entry.loc.slice(1).join(".") : "";
+          return typeof entry.msg === "string" ? `${where || "request"}: ${entry.msg}` : null;
+        })
+        .filter((value): value is string => Boolean(value));
+      if (messages.length) return messages.join("; ");
+    }
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "same-origin",
@@ -71,14 +100,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const body = (await response.json()) as { detail?: string };
-      detail = body.detail ?? detail;
-    } catch {
-      /* the body was not JSON; keep the status text */
-    }
-    throw new ApiError(response.status, detail);
+    throw new ApiError(response.status, await describeError(response));
   }
   if (response.status === 204) {
     return undefined as T;

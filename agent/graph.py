@@ -123,8 +123,11 @@ def build_graph(deps: GraphDeps, checkpointer: Any) -> Any:
     registry = deps.registry
 
     async def route(state: AgentState) -> dict[str, Any]:
-        if state.get("specialist"):
-            return {}
+        # Route every turn. The graph state lives in the per-thread checkpointer,
+        # so trusting an existing value made the specialist sticky: a turn routed
+        # to "executor" kept playing executor for the rest of the conversation and
+        # silently lost the scheduler's tools (task_delete included). A resumed
+        # turn does not re-enter this node, so re-routing cannot break resume.
         return {"specialist": route_specialist(_last_user_text(state))}
 
     async def agent(state: AgentState) -> dict[str, Any]:
@@ -132,6 +135,16 @@ def build_graph(deps: GraphDeps, checkpointer: Any) -> Any:
         specialist = state.get("specialist", "scheduler")
         visible = filter_tools(registry.for_specialist(specialist), ctx)
         messages = [ChatMessage.model_validate(m) for m in state["messages"]]
+        if ctx.turn_tainted:
+            # State the restriction in-band: the tool list alone tells the model
+            # nothing about *why* a tool vanished, and a refusal that blames
+            # outside content when the real cause is scope is a lie.
+            messages.append(
+                ChatMessage(
+                    role="system",
+                    content="tainted: outside content in this turn",
+                )
+            )
         reply = await deps.client.chat(
             messages, [_spec(t) for t in visible], deadline_ms=ctx.deadline_ms
         )
@@ -257,6 +270,7 @@ def initial_state(
             *(history or []),
             {"role": "user", "content": user_text},
         ],
+        "specialist": "",
         "tainted": False,
         "iterations": 0,
         "pending": None,

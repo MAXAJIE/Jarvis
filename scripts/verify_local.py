@@ -12,11 +12,30 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 
 import httpx
 import pyotp
 
 BASE = os.environ.get("JARVIS_BASE", "http://127.0.0.1:8000")
+
+
+def _operator_password() -> str:
+    """JARVIS_PASSWORD first, then the gitignored dev credential record.
+
+    Refusing to guess is the point: an empty password makes the login endpoint
+    return 422 and the recipe must say why rather than look like a broken app.
+    """
+    password = os.environ.get("JARVIS_PASSWORD", "")
+    if password:
+        return password
+    record = Path("var/DEV_CREDENTIALS.txt")
+    if not record.exists():
+        return ""
+    for line in record.read_text(encoding="utf-8").splitlines():
+        if line.lower().startswith("password:"):
+            return line.split(":", 1)[1].strip()
+    return ""
 
 
 def _client() -> httpx.AsyncClient:
@@ -36,7 +55,13 @@ async def login(client: httpx.AsyncClient) -> bool:
     from apps.api.config import get_settings
 
     settings = get_settings()
-    password = os.environ.get("JARVIS_PASSWORD", "")
+    password = _operator_password()
+    if not password:
+        print(
+            "FAIL login: no operator password. Set JARVIS_PASSWORD or run "
+            "python scripts/setup_operator.py first."
+        )
+        return False
     code = pyotp.TOTP(settings.operator_totp_secret).now()
     response = await client.post(
         "/api/auth/login",

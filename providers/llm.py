@@ -201,21 +201,103 @@ def _plan(text: str, message_id: str = "") -> list[ToolCall]:
     return []
 
 
-def _summarise(text: str, result: dict[str, Any] | None, zh: bool) -> str:
-    if result is None:
+def _tool_results(messages: Sequence[ChatMessage]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for message in messages:
+        if message.role != "tool":
+            continue
+        try:
+            parsed = json.loads(message.content)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            results.append(parsed)
+    return results
+
+
+def _titles(payloads: list[dict[str, Any]]) -> list[str]:
+    titles: list[str] = []
+    for payload in payloads:
+        task = payload.get("task")
+        if isinstance(task, dict) and isinstance(task.get("title"), str):
+            titles.append(task["title"])
+    return titles
+
+
+def _describe(name: str, payloads: list[dict[str, Any]], zh: bool) -> str:
+    """One readable sentence per tool, instead of dumping JSON at the operator."""
+    count = len(payloads)
+    titles = _titles(payloads)
+    shown = "、".join(titles[:5]) if zh else ", ".join(titles[:5])
+    if name == "task_create":
+        if zh:
+            return f"開咗 {count} 個任務：{shown}。"
+        return f"Created {count} task{'s' if count != 1 else ''}: {shown}."
+    if name == "task_list":
+        first = payloads[0] if payloads else {}
+        tasks = first.get("tasks") if isinstance(first.get("tasks"), list) else []
+        names = [str(t.get("title", "")) for t in tasks if isinstance(t, dict)]
+        joiner = "、" if zh else ", "
+        if not names:
+            return "你暫時冇任務。" if zh else "You have no tasks."
+        return (
+            f"你有 {len(names)} 個任務：{joiner.join(names[:6])}。"
+            if zh
+            else f"You have {len(names)} tasks: {joiner.join(names[:6])}."
+        )
+    if name == "task_delete":
+        return "已經刪除。" if zh else "Deleted."
+    if name == "task_complete":
+        return "已經完成。" if zh else "Marked done."
+    if name == "memory_write_fact":
+        return "記低咗，等你確認。" if zh else "Noted. Confirm it and I will treat it as fact."
+    if name in {"memory_search", "rag_search"}:
+        hits = payloads[0] if payloads else {}
+        items = hits.get("facts") or hits.get("hits") or []
+        total = len(items) if isinstance(items, list) else 0
+        return f"搵到 {total} 項。" if zh else f"Found {total} item(s)."
+    if name == "mail_search":
+        first = payloads[0] if payloads else {}
+        msgs = first.get("messages") if isinstance(first.get("messages"), list) else []
+        return f"有 {len(msgs)} 封相關郵件。" if zh else f"{len(msgs)} matching message(s)."
+    if name == "web_fetch":
+        first = payloads[0] if payloads else {}
+        text = first.get("text")
+        length = len(text) if isinstance(text, str) else 0
+        return f"抓到 {length} 個字元。" if zh else f"Fetched {length} characters."
+    if name in {"shell", "python_run"}:
+        first = payloads[0] if payloads else {}
+        return f"執行完，exit code {first.get('exit_code', '?')}。"
+    if name == "remind":
+        return "設好提醒。" if zh else "Reminder set."
+    return f"{name} × {count}。"
+
+
+def _summarise(user_text: str, messages: Sequence[ChatMessage], zh: bool) -> str:
+    results = _tool_results(messages)
+    if not results:
         if zh:
             return "我而家幫你處理。你可以叫我計劃一週、列出任務、讀網頁、或者打電話。"
         return (
-            "Tell me what to do — I can plan your week, list tasks, read a page, "
+            "Tell me what to do - I can plan your week, list tasks, read a page, "
             "draft mail, or place a call."
         )
-    if not result.get("ok", False):
-        reason = str(result.get("error", "unknown"))
-        return f"呢一步做唔到：{reason}。" if zh else f"I could not do that: {reason}."
-    payload = result.get("result", {})
+    failed = [r for r in results if not r.get("ok", False)]
+    if failed:
+        reason = str(failed[0].get("error", "unknown"))
+        return f"呢步做唔到：{reason}。" if zh else f"I could not do that: {reason}."
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for result in results:
+        payload = result.get("result")
+        grouped.setdefault(str(result.get("name", "")), []).append(
+            payload if isinstance(payload, dict) else {}
+        )
+    sentences = [_describe(name, payloads, zh) for name, payloads in grouped.items()]
+    text = " ".join(part for part in sentences if part)
     if zh:
-        return f"搞掂。結果：{json.dumps(payload, ensure_ascii=False)[:400]}"
-    return f"Done. Result: {json.dumps(payload, ensure_ascii=False)[:400]}"
+        return text
+    return text
 
 
 class StubClient:
@@ -242,6 +324,7 @@ class StubClient:
         zh = "zh-TW" in user_text or "繁體" in system_text
         source = re.search(r"message_id=(\S+)", system_text)
 
+        tainted = any(m.role == "system" and "tainted:" in m.content for m in messages)
         plan = _plan(user_text, source.group(1) if source else "")
         last = _tool_result(messages)
         if last is not None and isinstance(last.get("result"), dict):
@@ -251,25 +334,33 @@ class StubClient:
                     if call.name == "mail_send" and call.args.get("draft_id") == "<draft>":
                         call.args["draft_id"] = draft_id
         if not plan:
-            return LLMReply(content=_summarise(user_text, _tool_result(messages), zh))
+            return LLMReply(content=_summarise(user_text, messages, zh))
 
         for call in plan:
             if call.name not in available:
+                # The tool can be missing for two very different reasons: the turn
+                # is tainted, or the specialist does not own it. Say which, instead
+                # of blaming outside content for both.
+                reason = "呢一輪嘅內容來自外部" if tainted else "呢一輪用唔到呢個工具"
                 return LLMReply(
                     content=(
-                        f"我唔可以喺呢一輪用 {call.name}：呢一輪嘅內容來自外部，工具已經被移除。"
+                        f"我唔可以喺呢一輪用 {call.name}：{reason}。"
                         "如果真係要做，請開新一輪再叫我。"
                         if zh
                         else (
-                            f"I cannot use {call.name} in this turn: this turn contains "
-                            "outside content, so the tool is not available to me. Ask me "
-                            "again in a new turn if you still want it done."
+                            f"I cannot use {call.name} in this turn: "
+                            + (
+                                "the turn contains outside content"
+                                if tainted
+                                else "it is not available for this kind of request"
+                            )
+                            + ". Ask me again in a new turn if you still want it done."
                         )
                     )
                 )
             if not _done(messages, call):
                 return LLMReply(tool_calls=[call])
-        return LLMReply(content=_summarise(user_text, _tool_result(messages), zh))
+        return LLMReply(content=_summarise(user_text, messages, zh))
 
 
 class OpenAIClient:
