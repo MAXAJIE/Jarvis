@@ -34,6 +34,7 @@ from apps.api.db.session import session_scope
 from apps.api.routes.metrics import health
 from apps.api.services.audit import preview_for
 from apps.api.services.budget import dashboard
+from apps.api.services.reminders import recent as recent_reminders
 from media.tts import voice_status
 from packages.contracts.tool import RiskLevel
 from tools.registry import SPECIALIST_TOOLS, build_registry
@@ -109,8 +110,23 @@ async def _counters(session: Any, user_id: str, start: datetime) -> dict[str, in
 
 
 async def _feed(session: Any, user_id: str) -> list[dict[str, Any]]:
-    """Recent events, newest first: approvals, tool runs, and the spend alarm."""
+    """Recent events, newest first: reminders, approvals, tool runs, the spend alarm."""
     items: list[dict[str, Any]] = []
+
+    # Due reminders first: they are the only item here with a deadline that has
+    # already passed.
+    for reminder in await recent_reminders(limit=5):
+        items.append(
+            {
+                "kind": "reminder",
+                "level": "warn",
+                "title": reminder["title"],
+                "detail": f"due {reminder['due_at']}",
+                "ts": reminder["fired_at"],
+                "pending": True,
+                "ref": str(reminder["id"]),
+            }
+        )
 
     approvals = (
         await session.scalars(

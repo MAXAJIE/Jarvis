@@ -113,6 +113,10 @@ class Settings(BaseSettings):
     fixed_monthly_usd: Decimal = Decimal("11.80")
     call_max_duration_s: int = 600
     approval_ttl_minutes: int = 30
+    # Reminder delivery. The poll is cheap (one indexed query) so 30 s keeps a
+    # "remind me at 9:00" from arriving at 9:00:45; tests call deliver() directly.
+    reminders_enabled: bool = True
+    reminder_poll_s: int = 30
 
     @property
     def is_prod(self) -> bool:

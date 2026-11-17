@@ -1,4 +1,9 @@
-"""Voice over WebSocket: press to talk, one utterance per turn, English this phase.
+"""Voice over WebSocket: one utterance per turn, English this phase.
+
+Two client shapes use the same protocol. Press-to-talk records with MediaRecorder
+and sends webm/opus; continuous listening runs its own energy VAD in the browser,
+cuts each utterance at a pause, and sends 16-bit PCM in a WAV container - the only
+format where "stop mid-stream" produces a file that is still valid.
 
 Protocol (JSON text frames, plus raw binary frames for the audio itself):
 
@@ -42,7 +47,16 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 MAX_UTTERANCE_BYTES = 8 * 1024 * 1024  # 8 MB: ~2 minutes of opus, far past a turn
-ALLOWED_MIME = {"audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg"}
+ALLOWED_MIME = {
+    "audio/webm",
+    "audio/ogg",
+    "audio/mp4",
+    "audio/mpeg",
+    # Continuous listening cuts audio at a silence boundary in the browser, so the
+    # bytes are raw PCM with a WAV header rather than a container it can end cleanly.
+    "audio/wav",
+    "audio/x-wav",
+}
 
 
 async def _auth(ws: WebSocket) -> str | None:

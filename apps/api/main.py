@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
@@ -19,6 +20,8 @@ from apps.api.config import ensure_secret_key, get_settings
 from apps.api.db import session as db_session
 from apps.api.db.models import Base
 from apps.api.routes import approvals, auth_routes, chat, metrics, system, tasks, voice
+from apps.api.routes.notifications import router as notifications_router
+from apps.api.services.reminders import deliver as deliver_reminders
 
 WEB_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
 
@@ -35,15 +38,41 @@ async def init_database() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
     settings_guard()
     _ = ensure_secret_key()
     await init_database()
     runtime = Runtime()
     await runtime.start()
     app.state.runtime = runtime
+
+    # Reminders: a stored due time is a promise. One job, one query per tick.
+    scheduler: Any = None
+    if settings.reminders_enabled:
+        # APScheduler ships no type information; the call surface used here is two
+        # methods, so an ignore is honest where a stub package would be theatre.
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
+
+        scheduler = AsyncIOScheduler(timezone="UTC")
+        scheduler.add_job(
+            deliver_reminders,
+            trigger="interval",
+            seconds=max(5, settings.reminder_poll_s),
+            id="reminders",
+            max_instances=1,
+            coalesce=True,
+        )
+        scheduler.start()
+        # Fire once at boot so a reminder that came due while the process was down is
+        # delivered on start rather than up to a poll interval later.
+        await deliver_reminders()
+    app.state.scheduler = scheduler
+
     try:
         yield
     finally:
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
         await runtime.stop()
         await db_session.dispose()
 
@@ -67,6 +96,7 @@ def create_app() -> FastAPI:
         app.include_router(router)
     app.include_router(chat.router)
     app.include_router(voice.router)
+    app.include_router(notifications_router)
 
     if WEB_DIST.exists():
         app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")

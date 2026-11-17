@@ -57,11 +57,22 @@ export function CommandCenter({
   overview,
   onPrompt,
   onSection,
+  onChanged,
 }: {
   overview: Overview;
   onPrompt: (text: string) => void;
   onSection: (value: "chat" | "tasks" | "approvals" | "core" | "tools") => void;
+  onChanged: () => void;
 }) {
+  async function dismiss(eventId: string): Promise<void> {
+    const response = await fetch("/api/notifications/ack", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ ids: [Number(eventId)] }),
+    });
+    if (response.ok) onChanged();
+  }
   const { counters, budget, health } = overview;
   const missing = health.components.filter((part) => !part.ok);
   const disk = health.components.find((part) => part.component === "disk");
@@ -149,8 +160,22 @@ export function CommandCenter({
                     {relativeTime(item.ts)}
                   </span>
                 </div>
-                <div className="truncate text-[0.68rem] text-[var(--color-mute)]" title={item.detail}>
-                  {item.detail}
+                <div className="flex items-center gap-2">
+                  <span
+                    className="truncate text-[0.68rem] text-[var(--color-mute)]"
+                    title={item.detail}
+                  >
+                    {item.detail}
+                  </span>
+                  {item.kind === "reminder" && item.ref ? (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded border border-[var(--color-line)] px-1.5 text-[0.62rem] text-cyan-100"
+                      onClick={() => void dismiss(item.ref as string)}
+                    >
+                      Dismiss
+                    </button>
+                  ) : null}
                 </div>
               </div>
             </li>

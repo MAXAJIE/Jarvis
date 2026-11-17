@@ -113,6 +113,7 @@ export default function App() {
                   overview={overview.data}
                   onPrompt={promptThenChat}
                   onSection={setSection}
+                  onChanged={refreshApprovals}
                 />
               ) : null}
               {section === "chat" ? (

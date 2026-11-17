@@ -54,6 +54,9 @@ export default function Chat({
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
+  // The microphone toggle, not a per-utterance button: once on, it stays on and the
+  // local VAD decides when an utterance ended.
+  const [listening, setListening] = useState(false);
   const voiceRef = useRef<VoiceSession | null>(null);
   const socketRef = useRef<ChatSocket | null>(null);
   const langRef = useRef<Lang>(lang);
@@ -223,10 +226,27 @@ export default function Chat({
     } catch {
       /* ignore */
     }
-    if (next === "typing") window.setTimeout(() => inputRef.current?.focus(), 0);
+    if (next === "typing") {
+      // Leaving voice must release the microphone. A toggle that keeps recording in
+      // a mode the operator cannot see is the worst of both.
+      voiceRef.current?.stopListening();
+      setListening(false);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
+    }
   }
 
-  async function pressOrb() {
+  function micMessage(error: unknown): string {
+    // A denied microphone is a permission problem the operator can fix, not a
+    // silent no-op: say so, and leave typing available.
+    const blocked =
+      error instanceof DOMException &&
+      (error.name === "NotAllowedError" || error.name === "SecurityError");
+    if (blocked) return "Microphone blocked. Allow mic access for this site, or type instead.";
+    if (error instanceof Error) return `Microphone unavailable: ${error.message}`;
+    return "Microphone unavailable.";
+  }
+
+  async function toggleListening(): Promise<void> {
     if (!voiceReady || !voiceRef.current) {
       setNotice(voiceHint);
       changeMode("typing");
@@ -234,39 +254,38 @@ export default function Chat({
     }
     setNotice(null);
     const session = voiceRef.current;
-    if (voiceState === "recording") {
-      session.stop();
+    if (listening) {
+      session.stopListening();
+      setListening(false);
       return;
     }
-    if (voiceState === "thinking" || voiceState === "speaking") return;
     try {
-      await session.record();
+      await session.startListening();
+      setListening(true);
     } catch (error) {
-      // A denied microphone is a permission problem the operator can fix, not a
-      // silent no-op: say so, and leave typing available.
-      const blocked =
-        error instanceof DOMException &&
-        (error.name === "NotAllowedError" || error.name === "SecurityError");
-      const message = blocked
-        ? "Microphone blocked. Allow mic access for this site, or type instead."
-        : error instanceof Error
-          ? `Microphone unavailable: ${error.message}`
-          : "Microphone unavailable.";
-      setBubbles((current) => [...current, { id: nextId++, role: "system", text: message }]);
+      setBubbles((current) => [
+        ...current,
+        { id: nextId++, role: "system", text: micMessage(error) },
+      ]);
       setVoiceState("idle");
     }
   }
 
-  const talkLabel =
-    voiceState === "recording"
-      ? "LISTENING · TAP TO STOP"
+  function sendNow(): void {
+    voiceRef.current?.flush();
+  }
+
+  const talkLabel = !listening
+    ? "MICROPHONE OFF · TAP TO START"
+    : voiceState === "recording"
+      ? "HEARING YOU"
       : voiceState === "thinking"
-        ? "HEARD YOU · THINKING"
+        ? "THINKING"
         : voiceState === "speaking"
-          ? "SPEAKING · TAP TO INTERRUPT"
+          ? "SPEAKING"
           : voiceState === "connecting"
             ? "CONNECTING"
-            : "TAP TO TALK";
+            : "LISTENING · SPEAK, THEN PAUSE";
 
   async function decide(id: string, decision: "approved" | "rejected") {
     const body = await api<{ decision: string; turn: Turn | null }>(`/api/approvals/${id}/decide`, {
@@ -331,17 +350,21 @@ export default function Chat({
       {mode === "talking" ? (
         <div className="flex shrink-0 flex-col items-center gap-2 border-b border-[var(--color-line)] bg-[radial-gradient(600px_200px_at_50%_0%,rgba(34,211,238,0.12),transparent)] px-4 py-4">
           <Orb
-            state={!voiceReady ? "blocked" : voiceState === "idle" ? "idle" : "live"}
+            state={!voiceReady ? "blocked" : listening ? "live" : "idle"}
             subtitle={
               !voiceReady
                 ? voiceHint
-                : voiceState === "recording"
-                  ? "Listening through Deepgram"
-                  : voiceState === "speaking"
-                    ? "Speaking through Deepgram Aura"
-                    : "Tap to speak"
+                : !listening
+                  ? "Microphone off"
+                  : voiceState === "recording"
+                    ? "Hearing you"
+                    : voiceState === "speaking"
+                      ? "Speaking through Deepgram Aura"
+                      : voiceState === "thinking"
+                        ? "Working on it"
+                        : "Listening for speech"
             }
-            onClick={() => void pressOrb()}
+            onClick={() => void toggleListening()}
             size={132}
           />
           <div className="text-center text-[0.66rem] leading-relaxed text-[var(--color-mute)]">
@@ -350,15 +373,27 @@ export default function Chat({
             </div>
             <div className="mt-0.5 max-w-md">
               {voiceReady
-                ? "Press, speak, press again. One utterance per turn, English only for now."
+                ? listening
+                  ? "Speak, then pause. It answers and keeps listening until you switch this off."
+                  : "Switch the microphone on once, then just talk. English only for now."
                 : voiceHint}
             </div>
           </div>
-          <Waveform state={voiceState === "idle" || !voiceReady ? "idle" : "live"} bars={44} />
-          <div className="flex gap-2">
-            <button type="button" className="btn" onClick={() => void pressOrb()}>
-              {voiceState === "recording" ? "Stop & send" : "Talk"}
+          <Waveform state={!voiceReady || !listening ? "idle" : "live"} bars={44} />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="btn"
+              aria-pressed={listening}
+              onClick={() => void toggleListening()}
+            >
+              {listening ? "Stop listening" : "Start listening"}
             </button>
+            {listening && voiceState === "recording" ? (
+              <button type="button" className="btn" onClick={sendNow}>
+                Send now
+              </button>
+            ) : null}
             <button type="button" className="btn" onClick={() => changeMode("typing")}>
               Type instead
             </button>

@@ -1,12 +1,18 @@
 """End-to-end voice probe over the real socket, with no microphone.
 
-    python -m scripts.check_voice_loop ["list my tasks"]
+    python -m scripts.check_voice_loop ["list my tasks"]           # mp3, press-to-talk
+    python -m scripts.check_voice_loop --wav ["list my tasks"]     # wav, continuous mode
 
 It synthesizes an utterance with Deepgram Aura, pushes those bytes at /ws/voice the
 way the browser would, and checks the four things a voice turn must produce:
 a transcript, an agent turn, spoken audio, and cost rows for both stages.
 
-The one thing this cannot prove is the browser's MediaRecorder permission path -
+``--wav`` uses the same format continuous listening sends: 16-bit PCM in a WAV
+container. That is the path a browser with the microphone toggle on actually takes,
+and it is a different code path on the server (a different accepted mime and a
+different decoder), so it gets its own run rather than an assumption.
+
+The one thing this cannot prove is the browser's capture and permission path -
 there is no microphone in this environment - so that stays unverified and is
 listed as such.
 """
@@ -22,6 +28,7 @@ from pathlib import Path
 import httpx
 from websockets.asyncio.client import connect
 
+from apps.api.config import get_settings
 from media.tts import speak
 from scripts.verify_local import BASE, TurnError, login
 
@@ -29,12 +36,44 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
+async def _wav_utterance(text: str) -> tuple[bytes, str]:
+    """Ask Deepgram for linear16/WAV so the bytes match what the browser sends."""
+    settings = get_settings()
+    if not settings.deepgram_api_key:
+        raise SystemExit("DEEPGRAM_API_KEY is empty; --wav needs Deepgram TTS")
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            "https://api.deepgram.com/v1/speak",
+            params={
+                "model": settings.deepgram_tts_model_en,
+                "encoding": "linear16",
+                "container": "wav",
+                "sample_rate": "16000",
+            },
+            headers={
+                "Authorization": f"Token {settings.deepgram_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={"text": text},
+        )
+    if response.status_code != 200:
+        raise SystemExit(f"deepgram tts http {response.status_code}: {response.text[:200]}")
+    return response.content, "audio/wav"
+
+
 async def main(argv: list[str]) -> int:
-    utterance = argv[0] if argv else "list my tasks"
+    wav = "--wav" in argv
+    rest = [arg for arg in argv if arg != "--wav"]
+    utterance = rest[0] if rest else "list my tasks"
     print(f"utterance      : {utterance!r}")
 
-    speech = await speak(utterance, lang="en")
-    print(f"synthesized    : {len(speech.audio)} bytes via {speech.provider} {speech.voice}")
+    if wav:
+        audio, mime = await _wav_utterance(utterance)
+        print(f"synthesized    : {len(audio)} bytes as PCM WAV (continuous-listening format)")
+    else:
+        speech = await speak(utterance, lang="en")
+        audio, mime = speech.audio, "audio/mpeg"
+        print(f"synthesized    : {len(audio)} bytes via {speech.provider} {speech.voice}")
 
     async with httpx.AsyncClient(base_url=BASE, timeout=30.0) as client:
         await login(client)
@@ -50,10 +89,10 @@ async def main(argv: list[str]) -> int:
             f"tts={ready.get('thresholds', {}).get('tts')}"
         )
 
-        await ws.send(json.dumps({"type": "audio_start", "mime": "audio/mpeg"}))
+        await ws.send(json.dumps({"type": "audio_start", "mime": mime}))
         assert json.loads(await ws.recv())["type"] == "listening"
-        for start in range(0, len(speech.audio), 4096):
-            await ws.send(speech.audio[start : start + 4096])
+        for start in range(0, len(audio), 4096):
+            await ws.send(audio[start : start + 4096])
         await ws.send(json.dumps({"type": "audio_end"}))
 
         transcript = json.loads(await asyncio.wait_for(ws.recv(), timeout=60))
@@ -87,18 +126,19 @@ async def main(argv: list[str]) -> int:
         reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=120))
         if reply.get("type") == "error":
             raise TurnError(f"{reply.get('stage')}: {reply.get('message')}")
-        audio = base64.b64decode(reply["data"])
+        reply_audio = base64.b64decode(reply["data"])
         out = Path("var/voice-reply.mp3")
         out.parent.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(out.write_bytes, audio)
-        print(f"spoken reply   : {len(audio)} bytes {reply['mime']} -> {out}")
+        await asyncio.to_thread(out.write_bytes, reply_audio)
+        print(f"spoken reply   : {len(reply_audio)} bytes {reply['mime']} -> {out}")
 
-    ok = bool(audio) and bool(transcript["text"]) and bool(turn.get("answer"))
+    ok = bool(audio) and bool(transcript["text"]) and bool(turn.get("answer")) and bool(reply_audio)
     print()
     print(f"RESULT: {'PASS' if ok else 'FAIL'} — stt, agent turn and tts all ran over /ws/voice")
     print(
-        "NOT VERIFIED: the browser microphone path (MediaRecorder + permission prompt);"
-        " no microphone in this environment."
+        "NOT VERIFIED: the browser capture path (AudioWorklet + permission prompt);"
+        " no microphone in this environment. The VAD and WAV encoding are tested"
+        " separately against a synthetic signal."
     )
     return 0 if ok else 1
 

@@ -17,11 +17,12 @@ and failing.
 | Works, covered by a test | Not built |
 |---|---|
 | Tool registry: 22 tools with risk levels, taint and approval rules | Sandbox runner — **6 tools withheld**, not registered (needs Docker) |
-| LangGraph turn loop, approval `interrupt()` + resume across restarts | Scheduled delivery: RRULE is stored, nothing fires it yet |
+| LangGraph turn loop, approval `interrupt()` + resume across restarts | Telegram/phone delivery of reminders (in-app only today) |
 | Budget guard on **total** spend, including a fixed-cost floor | Inbound calls, `POST /webhooks/twilio/voice` |
 | Password + TOTP login, signed cookie, login rate limit | Telegram **inbound** (outbound send works) |
 | Tasks, memory facts, workspace files, keyword memory search | Gmail/Calendar: coded, but the OAuth exchange script is missing |
-| WebSocket chat, and voice in and out (`/ws/voice`) | Vector RAG: no ingestion, keyword search only |
+| WebSocket chat; **continuous voice** in and out (`/ws/voice`) | Vector RAG: no ingestion, keyword search only |
+| Reminders fire on time, repeat (RRULE subset), and can be dismissed | |
 | Provider chain with fallbacks, per-call cost ledger | PWA, `/api/export`, `/api/erase` |
 | React command-center UI that states what is off | Docker/compose, Caddy — this build targets a bare host |
 
@@ -211,27 +212,41 @@ Behaviour worth knowing before you pick a plan:
 
 ## Voice
 
-One utterance per turn: press Talk, speak, press again. Deepgram transcribes
-(nova-3), the agent runs one turn, Deepgram speaks the answer (Aura), the browser
-plays it. Approval requests are spoken aloud, because a silent gate on a voice
-channel is the same as no gate.
+The conversation view opens in voice mode with the microphone **off**. Switch it on
+once and just talk: the browser detects speech, cuts the utterance when you pause,
+sends it, speaks the reply, and goes back to listening by itself. No clicking per
+turn. Switch it off, or change to Typing, and the microphone is released.
+
+How it works, because the details are where it goes wrong:
+
+- **Detection is local.** `apps/web/src/lib/vad.ts` measures energy per 20 ms frame
+  against an adaptive noise floor (it tracks the quiet in the room instead of using a
+  fixed threshold), requires ~60 ms of speech to open, and closes after 900 ms of
+  silence. A 100 ms blip - a door, a cough - is discarded instead of becoming a turn.
+- **Audio is sent as WAV.** `apps/web/src/lib/wav.ts` wraps 16-bit PCM with a 300 ms
+  pre-roll, because `MediaRecorder` produces webm and a webm stream cut at a pause is
+  not a playable file. One utterance = one turn, the same protocol as before.
+- **Feedback is avoided twice.** The microphone is suspended while the answer is
+  thinking or playing, and a 350 ms guard after playback stops the tail of the reply
+  from being heard as your next sentence. Echo cancellation is requested as well, but
+  the loop does not depend on it.
+- **The microphone only opens on a click.** Browsers require a gesture; a permission
+  refusal is reported in the transcript ("Microphone blocked...") rather than leaving
+  a toggle that looks on.
+- A "Send now" button appears while it is hearing you, for when you do not want to
+  pause.
+
+English is the verified path. A Chinese voice needs `ELEVENLABS_API_KEY`; with
+Deepgram selected the app **refuses** zh-TW rather than reading Chinese in an English
+voice. Not built: streaming partial transcripts and barge-in (talking over the
+reply). `latency_ms` is measured and returned per turn; a free model lands around
+3.5 s against the 3 s target.
 
 ```bash
-uv run python -m scripts.check_voice "Jarvis online."   # → var/voice-sample.mp3
-uv run python -m scripts.check_voice_loop "list my tasks"  # drives /ws/voice end to end
+uv run python -m scripts.check_voice "Jarvis online."            # one synthesized sentence
+uv run python -m scripts.check_voice_loop "list my tasks"        # mp3, press-to-talk path
+uv run python -m scripts.check_voice_loop --wav "list my tasks"  # wav, continuous path
 ```
-
-- English is the verified path. A Chinese voice needs `ELEVENLABS_API_KEY`; with
-  Deepgram selected the app **refuses** zh-TW rather than reading Chinese in an
-  English voice.
-- Each stage bills independently (STT seconds, TTS characters) and each reports its
-  own failure, so a failed transcription never becomes an empty turn.
-- `latency_ms` is measured and returned on the wire. A free model currently lands
-  around 8 s against the 3 s target — reported, not hidden.
-- Not built: streaming input, barge-in. The browser needs microphone permission;
-  without it the UI says "Microphone blocked" rather than appearing to listen.
-
----
 
 ## Database
 
@@ -361,6 +376,16 @@ per-minute token quota, which is a *plan* limit rather than a defect — pace it
 JARVIS_VERIFY_PACE_S=25 uv run python -m scripts.verify_local     # RESULT: PASS
 ```
 
+### Reminders
+
+`remind` writes a task with a due time; a scheduler job (every 30 s, plus once at
+boot) delivers it exactly once, as a `task_events` row that surfaces in the Intel
+Feed and at `GET /api/notifications`. Dismiss with the button in the feed or
+`POST /api/notifications/ack`. A repeating task (`recurrence`, e.g.
+`FREQ=DAILY;INTERVAL=1`) moves its own `due_at` forward instead of cloning, and an
+unreadable rule is recorded as `reminder_recurrence_unreadable` rather than guessed.
+Delivery is in-app only: there is no phone/SMS/Telegram push yet.
+
 Health and gates:
 
 - `GET /api/health` → `200` only when every component is ready; otherwise `503`
@@ -373,7 +398,7 @@ Health and gates:
 ```bash
 uv run ruff check . && uv run ruff format --check .
 uv run mypy agent tools packages apps providers media scripts
-uv run pytest -q                                   # 113 passed, 3 skipped
+uv run pytest -q                                   # 132 passed, 3 skipped
 cd apps/web && npx tsc --noEmit && npm run build
 ```
 

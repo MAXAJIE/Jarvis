@@ -15,6 +15,8 @@ export interface FeedItem {
   detail: string;
   ts: string;
   pending: boolean;
+  /** Reminder event id, when the item can be dismissed from the feed. */
+  ref?: string;
 }
 
 export interface TimelineItem {
