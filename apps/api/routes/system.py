@@ -279,6 +279,7 @@ async def overview(user_id: str = Depends(require_session)) -> dict[str, Any]:
             "tasks_completed": budget["tasks_completed"],
             "failures": budget["failures"],
             "api_calls": budget["api_calls"],
+            "unpriced_calls": budget["unpriced_calls"],
             "tokens_used": budget["tokens_used"],
             "voice_minutes": budget["voice_minutes"],
             "cost_cents": cost,

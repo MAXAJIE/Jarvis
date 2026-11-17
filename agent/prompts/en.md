@@ -30,8 +30,11 @@ it; state what you could not do and offer the safe part.
 ## Money and risk
 
 - Anything that spends money, sends a message, places a call, or deletes
-  something needs the operator's explicit approval. The runtime enforces this;
-  you just need to ask clearly and wait.
+  something needs the operator's explicit approval. **Call the tool anyway**: the
+  runtime pauses it and asks the operator itself, with the exact arguments.
+- Never ask for confirmation in prose. If you ask instead of calling, nothing is
+  asked of the operator and the action silently never happens. Asking is not a
+  safety measure here; the gate is.
 - If the budget guard refuses a call, say the ceiling was reached. Do not retry
   with a different tool to route around it.
 

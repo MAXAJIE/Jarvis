@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 import httpx
@@ -98,8 +99,26 @@ async def ws_turn(text: str, cookie: str, lang: str | None = None) -> dict[str, 
         return frame
 
 
+PACE_S = float(os.environ.get("JARVIS_VERIFY_PACE_S", "0"))
+
+
+async def _pace() -> None:
+    """Space turns out when asked.
+
+    A free tier meters tokens per minute (Groq: 7000) and an agent turn costs about
+    1800 of them, so four turns back to back *cannot* pass on that plan - the script
+    would report a product defect where the product is fine and the quota is small.
+    Pacing is stated on stdout rather than hidden, and it is opt-in: an unpaced run
+    still fails, which is the honest result for that plan.
+    """
+    if PACE_S > 0:
+        await asyncio.sleep(PACE_S)
+
+
 async def main() -> int:
     failures = 0
+    if PACE_S > 0:
+        print(f"NOTE pacing turns {PACE_S:.0f}s apart (free-tier token quota)")
     async with _client() as client:
         if not await check_health(client):
             failures += 1
@@ -115,7 +134,8 @@ async def main() -> int:
             print(f"FAIL model call: {exc}")
             print("      nothing below this line was verified: no model, no turn")
             return 1
-        tools = [e for e in turn["events"] if e["type"] == "tool"]  # type: ignore[union-attr]
+        events: list[dict[str, object]] = list(turn.get("events") or [])  # type: ignore[call-overload]
+        tools = [e for e in events if e.get("type") == "tool"]
         # Two things must hold with any planner: the loop dispatched real tools,
         # and the turn came back with words. What must NOT be asserted is the tool
         # count or every tool succeeding: "plan my week" legitimately reaches for
@@ -129,22 +149,34 @@ async def main() -> int:
         print(f"{label} ws turn 'plan my week': {len(tools)} tool event(s) [{summary}]")
         failures += 0 if ok else 1
 
-        created = await client.post("/api/tasks", json={"title": "verify: delete me"})
+        # A unique title, and the id in the instruction: earlier runs left several
+        # tasks literally called "verify: delete me", and a small planner asked
+        # "which one?" instead of deleting - a verifier defect reported as a product
+        # defect. Leftovers from the previous run are cleared first.
+        for stale in (await client.get("/api/tasks")).json():
+            if str(stale["title"]).startswith("verify: delete me"):
+                await client.delete(f"/api/tasks/{stale['id']}")
+        title = f"verify: delete me {time.strftime('%H%M%S')}"
+        created = await client.post("/api/tasks", json={"title": title})
         task_id = created.json()["id"]
-        turn = await ws_turn(f"delete task {task_id}", cookie)
-        approval = turn["approval"]
+        print(f"NOTE created one task to delete: {title}")
+        await _pace()
+        turn = await ws_turn(f"delete the task with id {task_id}", cookie)
+        approval = turn.get("approval")
+        approval_id = approval["id"] if isinstance(approval, dict) else None
         ok = isinstance(approval, dict) and approval.get("tool_name") == "task_delete"
         print(f"{'PASS' if ok else 'FAIL'} destructive action paused for approval")
         failures += 0 if ok else 1
         if ok:
             decided = await client.post(
-                f"/api/approvals/{approval['id']}/decide", json={"decision": "rejected"}
+                f"/api/approvals/{approval_id}/decide", json={"decision": "rejected"}
             )
             still_there = await client.get("/api/tasks")
             ok = decided.status_code == 200 and any(t["id"] == task_id for t in still_there.json())
             print(f"{'PASS' if ok else 'FAIL'} rejected approval executed nothing")
             failures += 0 if ok else 1
 
+        await _pace()
         turn = await ws_turn("記住我住在吉隆坡", cookie, lang="zh-TW")
         from agent.lang import is_pure
         from packages.contracts.tool import Lang

@@ -442,3 +442,8 @@ NEXT:     <the next DoD item, or a question>
 ```
 
 No gate may be marked ✅ without pasted evidence. "Should work" is not evidence.
+- **Never** run `alembic downgrade` or any destructive SQL against `var/jarvis.db`:
+  `downgrade base` empties it. Use `python -m scripts.db_migrate_check` (throwaway copy)
+  and `python -m scripts.backup_db` first. This was learned by doing it (D-46).
+- The database is whichever `DATABASE_URL` says. `/api/health` names it; SQLite when
+  Supabase was intended is a silent fallback, so check the `db` component's detail.

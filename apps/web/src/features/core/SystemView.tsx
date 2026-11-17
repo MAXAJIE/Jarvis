@@ -57,6 +57,7 @@ export function SystemView({ overview }: { overview: Overview }) {
             ["Fixed floor", money(budget.fixed_usd)],
             ["Metered usage", money(budget.usage_usd)],
             ["LLM calls", String(counters.api_calls)],
+            ["Unpriced calls", String(counters.unpriced_calls)],
             ["Tokens", counters.tokens_used.toLocaleString()],
             ["Voice minutes", counters.voice_minutes.toFixed(2)],
             ["Tool runs", String(counters.tool_runs_month)],
@@ -67,6 +68,12 @@ export function SystemView({ overview }: { overview: Overview }) {
               <span className="kpi text-[var(--color-ink)]">{value}</span>
             </div>
           ))}
+          {counters.unpriced_calls > 0 ? (
+            <div className="mt-2 rounded border border-amber-700/50 bg-amber-500/10 px-2 py-1 text-[0.68rem] text-amber-200">
+              {counters.unpriced_calls} call(s) billed at $0 because no price was reported.
+              Spend is a floor, not a total — the ceiling is slack by that much.
+            </div>
+          ) : null}
           {budget.alarm ? (
             <div className="mt-2 rounded border border-rose-700/50 bg-rose-500/10 px-2 py-1 text-[0.68rem] text-rose-200">
               $15 alarm crossed. External tools stop at the ceiling.

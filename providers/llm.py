@@ -11,6 +11,7 @@ OpenAI and OpenRouter share.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Sequence
@@ -76,6 +77,9 @@ class AttemptTrace(BaseModel):
     ok: bool
     status: int | None = None
     error: str = ""
+    # Time spent waiting out a rate limit before this attempt. Kept separate from
+    # the caller's latency so a slow turn is explainable instead of mysterious.
+    waited_ms: int = 0
 
 
 class LLMClient(Protocol):
@@ -514,15 +518,25 @@ class UnconfiguredClient:
 class ProviderHTTPError(RuntimeError):
     """A provider said no. ``retryable`` decides whether the chain moves on."""
 
-    def __init__(self, provider: str, status: int, detail: str) -> None:
+    def __init__(
+        self, provider: str, status: int, detail: str, retry_after: float | None = None
+    ) -> None:
         super().__init__(f"{provider} http {status}: {detail}")
         self.provider = provider
         self.status = status
         self.detail = detail
+        # Seconds the provider asked us to wait. Groq sends Retry-After; its message
+        # also says "try again in 8.5s", which is parsed as a fallback because a
+        # silent retry loop that guesses is worse than one that reads the hint.
+        self.retry_after = retry_after if retry_after is not None else _retry_after_hint(detail)
         # 429 rate limit, 402 out of credit, 5xx and 408 are worth another
-        # provider's time. 400/401/403/404 are about *this* request or key and
-        # would fail the same way everywhere: retrying just doubles the latency.
-        self.retryable = status in {402, 408, 409, 425, 429} or status >= 500
+        # provider's time. 401/403/404 are about the key and fail identically
+        # everywhere. A plain 400 is a malformed request too - with one exception:
+        # Groq rejects our *tool-call arguments* with 400 when the model writes
+        # "7" where the schema says integer. The request was fine; the model's
+        # sampling was not, and a second attempt usually lands on valid JSON.
+        self.bad_generation = status == 400 and "tool call validation failed" in detail.lower()
+        self.retryable = status in {402, 408, 409, 425, 429} or status >= 500 or self.bad_generation
 
 
 class HTTPChatClient:
@@ -562,6 +576,11 @@ class HTTPChatClient:
             "model": self.model,
             "messages": wire_messages(messages),
             "temperature": 0.2,
+            # Stated, never left to the provider's default: Groq ages the absence of
+            # max_tokens into an "expected output" of ~1334 tokens and rejects the
+            # request against a 1000 tokens/minute cap, which fails a turn that would
+            # have fitted comfortably.
+            "max_tokens": get_settings().llm_max_tokens,
         }
         if tools:
             payload["tools"] = [
@@ -593,7 +612,12 @@ class HTTPChatClient:
             # The provider's body names the offending field. Dropping it turns a
             # one-line fix into a guessing game, and 'llm http 400' in the chat
             # bubble tells the operator nothing.
-            raise ProviderHTTPError(self.provider, response.status_code, _why(response.text))
+            raise ProviderHTTPError(
+                self.provider,
+                response.status_code,
+                _why(response.text),
+                _header_retry_after(response.headers.get("retry-after")),
+            )
         body: dict[str, Any] = response.json()
         choice = (body.get("choices") or [{}])[0]
         message = choice.get("message") or {}
@@ -614,6 +638,46 @@ class HTTPChatClient:
             tokens_out=int(usage.get("completion_tokens") or 0),
             cost_usd=float(reported) if isinstance(reported, int | float) else None,
         )
+
+
+# Cap on waiting out a rate limit. Groq's free tier asks for ~8.6 s when a turn
+# pushes it over 7000 tokens/minute, so 8 s sat exactly one second too low.
+MAX_LAST_RESORT_WAIT_S = 10.0
+
+
+def _header_retry_after(value: str | None) -> float | None:
+    try:
+        return float(value) if value else None
+    except ValueError:
+        return None
+
+
+def _retry_after_hint(detail: str) -> float | None:
+    match = re.search(r"try again in ([0-9.]+)\s*s", detail, re.IGNORECASE)
+    return float(match.group(1)) if match else None
+
+
+def _retry_delay(
+    exc: Exception, *, is_last: bool, attempt_no: int, deadline_ms: int, waited: float
+) -> float | None:
+    """How long to wait before retrying the *same* provider, or None to move on.
+
+    Moving on is always preferred and stays first. This only fires at the end of the
+    chain, where the alternative is a dead turn: a short 429 Retry-After inside both a
+    hard cap (8 s) and the caller's latency budget, or an immediate re-sample when the
+    model emitted tool arguments that failed validation."""
+    if not is_last or attempt_no > 0:
+        return None
+    if getattr(exc, "bad_generation", False):
+        return 0.0
+    if getattr(exc, "status", None) != 429:
+        return None
+    after: float | None = getattr(exc, "retry_after", None)
+    if after is None or not 0 < after <= MAX_LAST_RESORT_WAIT_S:
+        return None
+    if (waited + after) * 1000 > deadline_ms:
+        return None
+    return after
 
 
 class ChainClient:
@@ -641,35 +705,57 @@ class ChainClient:
     ) -> LLMReply:
         attempts: list[AttemptTrace] = []
         last: Exception | None = None
-        for client in self._clients:
-            try:
-                reply = await client.chat(messages, tools, deadline_ms=deadline_ms)
-            except (ProviderHTTPError, httpx.HTTPError, TimeoutError) as exc:
-                retryable = getattr(exc, "retryable", True)
+        for index, client in enumerate(self._clients):
+            is_last = index == len(self._clients) - 1
+            waited = 0.0
+            for attempt_no in (0, 1):
+                try:
+                    reply = await client.chat(messages, tools, deadline_ms=deadline_ms)
+                except (ProviderHTTPError, httpx.HTTPError, TimeoutError) as exc:
+                    retryable = getattr(exc, "retryable", True)
+                    attempts.append(
+                        AttemptTrace(
+                            provider=client.provider,
+                            model=client.model,
+                            ok=False,
+                            status=getattr(exc, "status", None),
+                            error=str(exc)[:300],
+                            waited_ms=int(waited * 1000),
+                        )
+                    )
+                    last = exc
+                    if not retryable:
+                        raise
+                    delay = _retry_delay(
+                        exc,
+                        is_last=is_last,
+                        attempt_no=attempt_no,
+                        deadline_ms=deadline_ms,
+                        waited=waited,
+                    )
+                    if delay is None:
+                        break
+                    await asyncio.sleep(delay)
+                    waited += delay
+                    continue
+                # The final attempt names whoever answered, so cost rows and the UI
+                # do not credit the primary for the fallback's work.
                 attempts.append(
                     AttemptTrace(
                         provider=client.provider,
                         model=client.model,
-                        ok=False,
-                        status=getattr(exc, "status", None),
-                        error=str(exc)[:300],
+                        ok=True,
+                        waited_ms=int(waited * 1000),
                     )
                 )
-                last = exc
-                if not retryable:
-                    raise
-                continue
-            # The final attempt names whoever answered, so cost rows and the UI
-            # do not credit the primary for the fallback's work.
-            attempts.append(AttemptTrace(provider=client.provider, model=client.model, ok=True))
-            return LLMReply(
-                content=reply.content,
-                tool_calls=reply.tool_calls,
-                tokens_in=reply.tokens_in,
-                tokens_out=reply.tokens_out,
-                cost_usd=reply.cost_usd,
-                attempts=attempts,
-            )
+                return LLMReply(
+                    content=reply.content,
+                    tool_calls=reply.tool_calls,
+                    tokens_in=reply.tokens_in,
+                    tokens_out=reply.tokens_out,
+                    cost_usd=reply.cost_usd,
+                    attempts=attempts,
+                )
         raise last if last is not None else RuntimeError("no provider answered")
 
 

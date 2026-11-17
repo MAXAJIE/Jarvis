@@ -44,22 +44,27 @@ CATALOG: dict[str, ProviderSpec] = {
         name="groq",
         base_url="https://api.groq.com/openai/v1",
         key_env="GROQ_API_KEY",
-        default_model="llama-3.3-70b-versatile",
-        note="free tier, very fast, supports tool calling",
+        # Verified against a real account with a real tool call: qwen accepts the
+        # loose schemas pydantic emits when every field has a default
+        # ("required": []). openai/gpt-oss-120b on Groq rejects those with
+        # "Tool call validation failed", so it is not the default even though it is
+        # the stronger model. Override with GROQ_MODEL when a schema demands it.
+        default_model="qwen/qwen3.8-27b",
+        note="free tier, fast; gpt-oss needs a non-empty required[]",
     ),
     "gemini": ProviderSpec(
         name="gemini",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         key_env="GEMINI_API_KEY",
         default_model="gemini-2.0-flash",
-        note="free tier via AI Studio, OpenAI-compatible endpoint",
+        note="free tier via AI Studio; UNVERIFIED (no key on this machine)",
     ),
     "cerebras": ProviderSpec(
         name="cerebras",
         base_url="https://api.cerebras.ai/v1",
         key_env="CEREBRAS_API_KEY",
         default_model="llama-3.3-70b",
-        note="free tier, very fast",
+        note="free tier; UNVERIFIED (no key on this machine)",
     ),
 }
 

@@ -17,6 +17,7 @@ from sqlalchemy import select
 from agent.runtime import Runtime, default_context
 from apps.api.db import session as db_session
 from apps.api.db.models import CostLedgerRow
+from apps.api.services.budget import dashboard
 from providers.llm import ChatMessage, LLMReply, ToolSpec
 
 
@@ -92,3 +93,32 @@ async def test_a_table_price_is_marked_as_a_guess_not_as_a_measured_cost(
     assert meta == {"price_source": "table"}
     # gpt-4o-mini table price: 120 in @0.15/M + 30 out @0.60/M = 0.000036
     assert row.usd == Decimal("0.000036")
+
+
+class PricelessClient(ReportedCostClient):
+    """Groq's shape: token counts, no price, and no entry in the local table."""
+
+    provider = "groq"
+    model = "qwen/qwen3.8-27b"
+
+
+async def test_unknown_price_is_counted_as_unpriced_not_as_free(db: dict[str, str]) -> None:
+    """A 0 USD row from ignorance must be visible in the dashboard.
+
+    The $20 ceiling is the product's promise. If a provider reports no price and the
+    local table has no entry, that call bills 0 and the ceiling silently gains
+    headroom. The dashboard has to say so, or the number is a fiction.
+    """
+    await _run_one_turn(PricelessClient(cost_usd=None), db)
+    row = await _last_llm_row()
+    assert dict(row.meta or {}) == {"unverified_price": True}
+    assert row.usd == Decimal(0)
+
+    data = await dashboard()
+    assert data["unpriced_calls"] >= 1
+
+
+async def test_a_reported_free_model_is_not_counted_as_unpriced(db: dict[str, str]) -> None:
+    """A provider that says 0 explicitly (OpenRouter :free) is a known price."""
+    await _run_one_turn(ReportedCostClient(cost_usd=0.0), db)
+    assert (await dashboard())["unpriced_calls"] == 0

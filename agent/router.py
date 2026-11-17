@@ -44,6 +44,11 @@ def route_specialist(text: str) -> str:
     # "remind me at 9" is a task, and the schedule regex matches both.
     if SUPERVISE.search(text) and not REMIND.search(text):
         return "supervisor"
+    # "remind me to call mum at 9" is a reminder that happens to contain the verb
+    # "call". Checked before COMMS, otherwise it routed to comms, whose allowlist
+    # has no remind/task_create, and the reminder simply never existed.
+    if REMIND.search(text):
+        return "scheduler"
     if COMMS.search(text):
         return "comms"
     if EXECUTE.search(text):

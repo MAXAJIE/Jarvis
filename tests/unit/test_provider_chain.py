@@ -41,6 +41,8 @@ class _Scripted(HTTPChatClient):
         spec = CATALOG[provider]
         super().__init__(spec, model, "test-key")
         self.calls = 0
+        # Optional script: first call raises these, then behaves normally.
+        self.queue: list[Exception] = []
 
     async def chat(
         self,
@@ -51,6 +53,8 @@ class _Scripted(HTTPChatClient):
     ) -> LLMReply:
         del messages, tools, deadline_ms
         self.calls += 1
+        if self.queue:
+            raise self.queue.pop(0)
         outcome = type(self).outcomes[self.provider]
         if isinstance(outcome, Exception):
             raise outcome
@@ -143,6 +147,13 @@ def test_every_catalog_entry_is_openai_compatible_and_has_a_key_name() -> None:
 
 def test_a_retryable_status_is_distinguished_from_a_permanent_one() -> None:
     assert ProviderHTTPError("x", 429, "").retryable
+    # A model writing "7" where the schema says integer is a sampling fault, not a
+    # malformed request: Groq answers 400 and a second attempt usually succeeds.
+    bad_args = ProviderHTTPError(
+        "groq", 400, "tool call validation failed: parameters for tool calendar_read ..."
+    )
+    assert bad_args.bad_generation and bad_args.retryable
+    assert not ProviderHTTPError("groq", 400, "invalid model").retryable
     assert ProviderHTTPError("x", 402, "").retryable
     assert ProviderHTTPError("x", 503, "").retryable
     assert not ProviderHTTPError("x", 400, "").retryable
@@ -167,3 +178,89 @@ async def test_a_network_error_is_retryable_but_a_protocol_error_is_not() -> Non
     assert reply.content == "answered"
     assert isinstance(reply.attempts[0], AttemptTrace)
     assert reply.attempts[0].ok is False
+
+
+@pytest.mark.anyio
+async def test_the_last_provider_waits_out_a_short_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A free tier says "try again in 2s". With every other provider exhausted, a
+    dead turn is the wrong answer; a 2 s wait is not."""
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr("providers.llm.asyncio.sleep", fake_sleep)
+    a = _Scripted("openrouter", "m")
+    b = _Scripted("groq", "m")
+    a.queue = [ProviderHTTPError("openrouter", 429, "daily free limit")]
+    b.queue = [ProviderHTTPError("groq", 429, "try again in 2.5s")]
+    _Scripted.outcomes = {"openrouter": "unused", "groq": "answered after the wait"}
+
+    reply = await ChainClient([a, b]).chat([], [], deadline_ms=30_000)
+
+    assert reply.content == "answered after the wait"
+    assert slept == [2.5]
+    assert b.calls == 2
+    assert reply.attempts[-1].ok is True
+    assert reply.attempts[-1].waited_ms == 2500
+
+
+@pytest.mark.anyio
+async def test_a_long_rate_limit_is_not_waited_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Groq's token limit can ask for a minute. Blocking a turn that long is worse
+    than failing it, so above the cap the chain gives up immediately."""
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr("providers.llm.asyncio.sleep", fake_sleep)
+    a = _Scripted("groq", "m")
+    a.queue = [ProviderHTTPError("groq", 429, "try again in 45s")]
+    _Scripted.outcomes = {"groq": "never"}
+
+    with pytest.raises(ProviderHTTPError):
+        await ChainClient([a]).chat([], [], deadline_ms=30_000)
+    assert slept == []
+    assert a.calls == 1
+
+
+@pytest.mark.anyio
+async def test_a_rate_limit_inside_the_deadline_is_not_waited_past_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 3 s voice turn cannot spend 5 s waiting for a typed turn's patience."""
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr("providers.llm.asyncio.sleep", fake_sleep)
+    a = _Scripted("groq", "m")
+    a.queue = [ProviderHTTPError("groq", 429, "try again in 5s")]
+    _Scripted.outcomes = {"groq": "never"}
+
+    with pytest.raises(ProviderHTTPError):
+        await ChainClient([a]).chat([], [], deadline_ms=3000)
+    assert slept == []
+
+
+@pytest.mark.anyio
+async def test_a_model_that_writes_bad_arguments_is_re_sampled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One provider, one bad sample, second sample good: the turn must survive."""
+    a = _Scripted("groq", "m")
+    a.queue = [
+        ProviderHTTPError("groq", 400, "tool call validation failed: days_ahead expected integer")
+    ]
+    _Scripted.outcomes = {"groq": "second sample was fine"}
+
+    reply = await ChainClient([a]).chat([], [], deadline_ms=30_000)
+
+    assert reply.content == "second sample was fine"
+    assert a.calls == 2
+    assert reply.attempts[0].status == 400
+    assert reply.attempts[-1].ok is True

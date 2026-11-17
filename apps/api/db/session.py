@@ -1,13 +1,25 @@
 """Async engine and session factory.
 
-One process, one user, one engine. Tests call ``configure`` with an in-memory
-SQLite URL and ``reset`` between cases.
+One process, one user, one engine. Tests call ``configure`` with a temporary SQLite
+URL and ``reset``/``dispose`` between cases.
+
+Two dialects are supported on purpose:
+
+* SQLite (``sqlite+aiosqlite``) - the default. Fast, hermetic, no server, and the
+  profile the test suite runs on.
+* PostgreSQL / Supabase (``postgresql+asyncpg``) - the durable store.
+
+The differences that actually bite are handled here: SQLite needs foreign keys
+switched on per connection (they are off by default, silently), and Postgres behind
+a transaction pooler needs asyncpg's prepared-statement cache disabled or the second
+query in a session fails with DuplicatePreparedStatementError.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
@@ -34,12 +46,33 @@ def _enable_sqlite_fks(engine: AsyncEngine) -> None:
         cursor.close()
 
 
+def _postgres_args(settings: Any) -> dict[str, Any]:
+    """Connection arguments for asyncpg.
+
+    ``statement_cache_size=0`` is not an optimisation: behind Supabase's transaction
+    pooler (port 6543) the server hands each transaction a different backend, so a
+    cached prepared statement from the previous one does not exist any more.
+    """
+    args: dict[str, Any] = {"server_settings": {"application_name": "jarvis"}}
+    if settings.is_pooled_postgres:
+        args["statement_cache_size"] = 0
+        args["prepared_statement_cache_size"] = 0
+    return args
+
+
 def configure(url: str | None = None) -> AsyncEngine:
     global _engine, _factory
     if _engine is not None:
         return _engine
-    target = url or get_settings().database_url
-    engine = create_async_engine(target, future=True, pool_pre_ping=True)
+    settings = get_settings()
+    target = url or settings.database_url
+    postgres = target.startswith(("postgresql", "postgres"))
+    options: dict[str, Any] = {"future": True, "pool_pre_ping": True}
+    if postgres:
+        options["pool_size"] = settings.db_pool_size
+        options["max_overflow"] = settings.db_max_overflow
+        options["connect_args"] = _postgres_args(settings) if url is None else {}
+    engine = create_async_engine(target, **options)
     _enable_sqlite_fks(engine)
     _engine = engine
     _factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)

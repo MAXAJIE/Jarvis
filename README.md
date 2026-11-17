@@ -92,6 +92,50 @@ utterance before sending it). The turn latency is reported on the wire as
 `latency_ms`; a free model lands around 8 s against the 3 s target, which is why
 the number is measured rather than claimed.
 `,
+## Database
+
+Default is a local SQLite file (`var/jarvis.db`): no server, no Docker, and the
+profile the test suite runs on. To use **Supabase** instead, put its pooled
+connection string in `.env` (Project → Connect → Session pooler):
+
+```bash
+DATABASE_URL=postgresql+asyncpg://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+```
+
+Then create the schema, once:
+
+```bash
+uv run alembic upgrade head
+```
+
+- **Port 5432** is the session pooler and works as-is. **Port 6543** is the
+  transaction pooler: the app disables asyncpg's prepared-statement cache for it
+  automatically, because each transaction gets a different backend.
+- The URL contains the database password. It goes in `.env` only, which is
+  gitignored; nothing logs it, and `/api/health` reports the database *name*, not
+  the DSN.
+- Every table gets row level security with no policies. Supabase publishes
+  PostgREST behind the project's public anon key; without RLS every row here would
+  be readable and writable through that API, which Jarvis itself never uses. RLS
+  with no policy is deny-all for anon, while the owner role the app connects as is
+  unaffected.
+- Conversation checkpoints stay in `var/checkpoints.sqlite`. Moving them to
+  Postgres needs a second driver stack (`langgraph-checkpoint-postgres`) that is
+  not verified in this build; see D-46.
+- Before anything destructive, and before a migration, take a copy:
+  `uv run python -m scripts.backup_db` (SQLite copy, or `pg_dump` when on Postgres).
+- Exercise the migration chain on a throwaway database, never the live one:
+  `uv run python -m scripts.db_migrate_check`.
+- Parity against a real database is a separate, loud gate:
+
+```bash
+JARVIS_TEST_POSTGRES_URL='postgresql+asyncpg://...' uv run pytest tests/integration/test_postgres_parity.py -q
+```
+
+Without that variable those tests **skip** and say so; the build does not claim
+Postgres works until they have run against a real instance.
+
+
 ## Gates
 
 ```bash

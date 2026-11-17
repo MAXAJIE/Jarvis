@@ -76,6 +76,7 @@ export interface Overview {
     tasks_completed: number;
     failures: number;
     api_calls: number;
+    unpriced_calls: number;
     tokens_used: number;
     voice_minutes: number;
     cost_cents: number;

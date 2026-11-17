@@ -23,13 +23,22 @@ router = APIRouter(tags=["ops"])
 MIN_DISK_FREE_PERCENT = 10.0
 
 
-async def _db_ok() -> bool:
+async def _db_health() -> tuple[bool, str]:
+    """Reachable *and* which database. "db reachable" is not enough: SQLite when the
+    operator expects Supabase is the silent fallback this project forbids."""
+    settings = get_settings()
+    label = "postgres" if settings.is_postgres else "sqlite"
     try:
         async with session_scope() as session:
             await session.execute(text("SELECT 1"))
-        return True
-    except Exception:  # noqa: BLE001 - health must report, not raise
-        return False
+            if settings.is_postgres:
+                name = (await session.execute(text("SELECT current_database()"))).scalar()
+                label = f"postgres {name}"
+            else:
+                label = "sqlite"
+        return True, label + (" (pooler)" if settings.is_pooled_postgres else "")
+    except Exception as exc:  # noqa: BLE001 - health must report, not raise
+        return False, f"{label}: {type(exc).__name__}"
 
 
 def _component(name: str, ok: bool, detail: str) -> dict[str, Any]:
@@ -41,9 +50,8 @@ async def health(response: Response) -> dict[str, Any]:
     settings = get_settings()
     components: list[dict[str, Any]] = []
 
-    components.append(_component("db", False, "checking"))
-    db_ok = await _db_ok()
-    components[-1] = _component("db", db_ok, "reachable" if db_ok else "unreachable")
+    db_ok, db_detail = await _db_health()
+    components.append(_component("db", db_ok, db_detail))
 
     llm_ok = settings.llm_configured
     components.append(

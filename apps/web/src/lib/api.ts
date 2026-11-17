@@ -39,6 +39,8 @@ export interface Dashboard {
   tasks_completed: number;
   failures: number;
   api_calls: number;
+  /** Calls whose price neither the provider nor the table reported. */
+  unpriced_calls: number;
   tokens_used: number;
   voice_minutes: number;
   spend_usd: number;

@@ -174,6 +174,18 @@ async def dashboard() -> dict[str, Any]:
                 )
             )
         ).scalar_one()
+        unpriced_calls = (
+            await session.execute(
+                select(func.count(CostLedgerRow.id)).where(
+                    CostLedgerRow.kind == "llm",
+                    CostLedgerRow.ts >= start,
+                    # Neither the provider nor the price table knew the price, so this
+                    # row is 0 USD out of ignorance, not because it was free. Counting
+                    # it keeps "spend may be understated" a number instead of a caveat.
+                    CostLedgerRow.meta["unverified_price"].as_boolean().is_(True),
+                )
+            )
+        ).scalar_one()
         voice_minutes = (
             await session.execute(
                 select(func.coalesce(func.sum(CostLedgerRow.units), 0)).where(
@@ -187,6 +199,7 @@ async def dashboard() -> dict[str, Any]:
         "tasks_completed": int(tasks_completed),
         "failures": int(failures),
         "api_calls": int(llm_calls),
+        "unpriced_calls": int(unpriced_calls),
         "tokens_used": int(tokens),
         "voice_minutes": float(voice_minutes),
         "spend_usd": float(state.total_usd),

@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     app_base_url: str = "http://127.0.0.1:8000"
     secret_key: str = ""
     database_url: str = "sqlite+aiosqlite:///./var/jarvis.db"
+    # Postgres/Supabase pool sizing. Supabase free tier allows a small number of
+    # direct connections; a single-user assistant needs one.
+    db_pool_size: int = 5
+    db_max_overflow: int = 2
     operator_email: str = "operator@localhost"
 
     # operator credentials (written by scripts/setup_operator.py)
@@ -58,6 +62,18 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     cerebras_api_key: str = ""
     llm_model_strong: str = "gpt-4o-mini"
+    # Explicit output budget. Without it Groq assumes ~1334 tokens and refuses the
+    # whole request against its 1000 tokens/minute free-tier output cap. Replies here
+    # are a few sentences plus tool calls; 800 is generous and still inside the cap.
+    llm_max_tokens: int = 800
+    # Per-provider model override for fallbacks. Blank means "use the catalog
+    # default", which is only as good as the last time it was probed
+    # (scripts/check_providers.py).
+    openai_model: str = ""
+    openrouter_model: str = ""
+    groq_model: str = ""
+    gemini_model: str = ""
+    cerebras_model: str = ""
     llm_model_cheap: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
 
@@ -101,6 +117,19 @@ class Settings(BaseSettings):
     @property
     def is_prod(self) -> bool:
         return self.app_env.lower() in {"prod", "production"}
+
+    @property
+    def is_postgres(self) -> bool:
+        """True for any Postgres URL. Drives pooling, JSONB and the pooler workaround."""
+        return self.database_url.startswith(("postgresql", "postgres"))
+
+    @property
+    def is_pooled_postgres(self) -> bool:
+        """A transaction pooler (Supabase :6543, pgbouncer) breaks asyncpg prepared
+        statements: asyncpg.DuplicatePreparedStatementError on the second query. The
+        port and ``pooler`` in the host are the two reliable hints."""
+        url = self.database_url.lower()
+        return self.is_postgres and ("pooler" in url or ":6543" in url)
 
     @property
     def llm_configured(self) -> bool:
@@ -147,10 +176,14 @@ class Settings(BaseSettings):
         return "" if spec is None else str(getattr(self, spec.name + "_api_key", ""))
 
     def model_for(self, provider: str) -> str:
-        """The primary honours LLM_MODEL_STRONG; fallbacks use their catalog default."""
+        """Primary honours LLM_MODEL_STRONG; a fallback honours <PROVIDER>_MODEL, then
+        the catalog default."""
         if provider == self.llm_provider:
             return self.llm_model_strong
         spec = _catalog_spec(provider)
+        override = str(getattr(self, provider + "_model", "") or "")
+        if override:
+            return override
         return spec.default_model if spec else ""
 
     @property
