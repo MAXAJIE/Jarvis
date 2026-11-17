@@ -15,6 +15,8 @@ import pyotp
 from apps.api.auth import hash_password
 from apps.api.config import ENV_FILE, REPO_ROOT, ensure_secret_key, get_settings
 
+CREDENTIALS_FILE = REPO_ROOT / "var" / "DEV_CREDENTIALS.txt"
+
 
 def upsert_env(key: str, value: str) -> None:
     path: Path = REPO_ROOT / ENV_FILE
@@ -51,9 +53,29 @@ def main() -> int:
     upsert_env("OPERATOR_EMAIL", settings.operator_email)
     ensure_secret_key()
     _ = secrets
+    uri = pyotp.TOTP(secret).provisioning_uri(name=settings.operator_email, issuer_name="Jarvis")
+
+    # The dev record is written here, not by hand: a hand-kept copy went stale and
+    # the local verifier then logged in with a code the server had already replaced.
+    CREDENTIALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CREDENTIALS_FILE.write_text(
+        "\n".join(
+            [
+                "LOCAL DEV LOGIN (gitignored; delete after you have your own)",
+                "url:      http://127.0.0.1:8000",
+                f"email:    {settings.operator_email}",
+                f"password: {password}",
+                f"totp:     {secret}",
+                f"otpauth:  {uri}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     print("\nAdd this to your authenticator app:")
-    print(pyotp.TOTP(secret).provisioning_uri(name=settings.operator_email, issuer_name="Jarvis"))
+    print(uri)
     print("\nWrote OPERATOR_PASSWORD_HASH, OPERATOR_TOTP_SECRET to .env")
+    print(f"Wrote the local dev login to {CREDENTIALS_FILE.relative_to(REPO_ROOT)}")
     return 0
 
 
