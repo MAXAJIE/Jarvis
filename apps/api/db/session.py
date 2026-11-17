@@ -19,9 +19,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import event
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -60,12 +62,28 @@ def _postgres_args(settings: Any) -> dict[str, Any]:
     return args
 
 
+def _prepare_sqlite_path(target: str) -> None:
+    """Create the directory a SQLite file lives in.
+
+    ``var/`` is gitignored, so on a fresh clone it does not exist and SQLite cannot
+    create ``var/jarvis.db`` inside it - a first boot that dies with "unable to open
+    database file" and no hint about why. Cheap to prevent, impossible to guess.
+    """
+    if not target.startswith("sqlite"):
+        return
+    database = make_url(target).database
+    if not database or database == ":memory:" or database.startswith("file:"):
+        return
+    Path(database).expanduser().parent.mkdir(parents=True, exist_ok=True)
+
+
 def configure(url: str | None = None) -> AsyncEngine:
     global _engine, _factory
     if _engine is not None:
         return _engine
     settings = get_settings()
     target = url or settings.database_url
+    _prepare_sqlite_path(target)
     postgres = target.startswith(("postgresql", "postgres"))
     options: dict[str, Any] = {"future": True, "pool_pre_ping": True}
     if postgres:

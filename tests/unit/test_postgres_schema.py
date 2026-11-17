@@ -104,6 +104,20 @@ def test_unpriced_ledger_query_compiles_for_postgres() -> None:
     assert "CAST(" in rendered
 
 
+def test_a_fresh_clone_can_create_its_sqlite_directory(tmp_path) -> None:
+    """`var/` is gitignored, so it does not exist on a clean clone. SQLite cannot
+    create a file inside a missing directory and the first boot dies with "unable to
+    open database file" - found by running the README's quick start on a clean copy."""
+    from apps.api.db.session import _prepare_sqlite_path
+
+    target = f"sqlite+aiosqlite:///{(tmp_path / 'nested' / 'deeper' / 'jarvis.db').as_posix()}"
+    _prepare_sqlite_path(target)
+    assert (tmp_path / "nested" / "deeper").is_dir()
+    # In-memory and non-SQLite URLs must be left alone.
+    _prepare_sqlite_path("sqlite+aiosqlite:///:memory:")
+    _prepare_sqlite_path("postgresql+asyncpg://u:p@host:5432/db")
+
+
 @pytest.mark.asyncio
 async def test_health_names_the_database_in_use() -> None:
     """The health panel must say which database answered, not merely 'reachable'."""
