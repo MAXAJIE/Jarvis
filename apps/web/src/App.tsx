@@ -4,22 +4,22 @@ import { useState } from "react";
 import Approvals from "./features/approvals/Approvals";
 import Login from "./features/auth/Login";
 import Chat from "./features/chat/Chat";
-import Dashboard from "./features/dashboard/Dashboard";
+import { CommandCenter } from "./features/core/CommandCenter";
+import { SystemView } from "./features/core/SystemView";
+import { MemoryView } from "./features/memory/MemoryView";
+import { BottomBar } from "./features/shell/BottomBar";
+import { MobileNav, Sidebar, type Section } from "./features/shell/Sidebar";
+import { TopBar } from "./features/shell/TopBar";
 import Tasks from "./features/tasks/Tasks";
+import { ToolsView } from "./features/tools/ToolsView";
 import { ApiError, api, type Identity } from "./lib/api";
 import { useApprovals } from "./lib/approvals";
-
-type Tab = "chat" | "tasks" | "approvals" | "dashboard";
-
-const TABS: { id: Tab; label: string }[] = [
-  { id: "chat", label: "Chat" },
-  { id: "tasks", label: "Tasks" },
-  { id: "approvals", label: "Approvals" },
-  { id: "dashboard", label: "Dashboard" },
-];
+import { useOverview } from "./lib/overview";
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("chat");
+  const [section, setSection] = useState<Section>("command");
+  const [search, setSearch] = useState("");
+  const [prompt, setPrompt] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const me = useQuery<Identity | null>({
@@ -34,11 +34,18 @@ export default function App() {
     },
   });
 
-  const pending = useApprovals(Boolean(me.data));
+  const signedIn = Boolean(me.data);
+  const overview = useOverview(signedIn);
+  const approvals = useApprovals(signedIn);
 
   if (me.isLoading) {
-    return <div className="p-6 text-sm text-slate-400">loading…</div>;
+    return (
+      <div className="grid h-full place-items-center text-[0.8rem] text-[var(--color-mute)]">
+        connecting to the core…
+      </div>
+    );
   }
+
   if (!me.data) {
     return (
       <Login
@@ -55,33 +62,93 @@ export default function App() {
     queryClient.clear();
   }
 
-  return (
-    <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-4 p-4">
-      <header className="flex flex-wrap items-center gap-2">
-        <span className="mr-2 font-semibold">Jarvis</span>
-        {TABS.map((entry) => (
-          <button
-            key={entry.id}
-            className={`btn ${tab === entry.id ? "btn-primary" : ""}`}
-            onClick={() => setTab(entry.id)}
-            type="button"
-          >
-            {entry.label}
-            {entry.id === "approvals" && pending.data?.count ? ` (${pending.data.count})` : ""}
-          </button>
-        ))}
-        <span className="ml-auto text-xs text-slate-500">{me.data.email}</span>
-        <button className="btn" onClick={logout} type="button">
-          Sign out
-        </button>
-      </header>
+  const voiceReady = Boolean(overview.data?.voice.transport_ready);
+  const voiceHint = overview.data
+    ? overview.data.voice.configured
+      ? "Speech keys are present, but the streaming turn is not wired yet (W5)."
+      : "Voice is offline: DEEPGRAM_API_KEY and AZURE_SPEECH_KEY are empty. Typing works now."
+    : "Loading voice state…";
 
-      <main className="min-h-0 flex-1">
-        {tab === "chat" ? <Chat onDecided={() => void queryClient.invalidateQueries()} /> : null}
-        {tab === "tasks" ? <Tasks /> : null}
-        {tab === "approvals" ? <Approvals onDecided={() => void queryClient.invalidateQueries()} /> : null}
-        {tab === "dashboard" ? <Dashboard /> : null}
-      </main>
+  /** The shell keeps one poll; panels read the same snapshot. */
+  const refreshApprovals = () => {
+    void queryClient.invalidateQueries({ queryKey: ["approvals"] });
+    void queryClient.invalidateQueries({ queryKey: ["overview"] });
+  };
+
+  function promptThenChat(text: string) {
+    setPrompt(text);
+    setSection("chat");
+  }
+
+  return (
+    <div className="flex h-full flex-col">
+      <TopBar
+        identity={me.data}
+        overview={overview.data}
+        query={search}
+        onQuery={setSearch}
+        onSignOut={() => void logout()}
+      />
+
+      <div className="flex min-h-0 flex-1">
+        <Sidebar section={section} onSection={setSection} overview={overview.data} />
+
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-3">
+          <MobileNav section={section} onSection={setSection} />
+          {!overview.data ? (
+            <div className="panel grid flex-1 place-items-center text-[0.78rem] text-[var(--color-mute)]">
+              reading telemetry…
+            </div>
+          ) : (
+            <>
+              {section === "command" ? (
+                <CommandCenter
+                  overview={overview.data}
+                  onPrompt={promptThenChat}
+                  onSection={setSection}
+                />
+              ) : null}
+              {section === "chat" ? (
+                <Chat
+                  onDecided={refreshApprovals}
+                  voiceReady={voiceReady}
+                  voiceHint={voiceHint}
+                  prompt={prompt}
+                  onPromptConsumed={() => setPrompt(null)}
+                />
+              ) : null}
+              {section === "tasks" ? <Tasks query={search} /> : null}
+              {section === "approvals" ? (
+                <Approvals query={search} onDecided={refreshApprovals} />
+              ) : null}
+              {section === "core" ? <SystemView overview={overview.data} /> : null}
+              {section === "tools" ? <ToolsView overview={overview.data} query={search} /> : null}
+              {section === "memory" ? (
+                <MemoryView overview={overview.data} onOpenChat={() => setSection("chat")} />
+              ) : null}
+            </>
+          )}
+        </main>
+      </div>
+
+      <BottomBar
+        overview={overview.data}
+        listening={false}
+        onTalk={() => setSection("chat")}
+        onType={() => setSection("chat")}
+      />
+
+      {approvals.data?.count ? (
+        <div className="pointer-events-none fixed bottom-20 right-4 z-10">
+          <button
+            type="button"
+            className="pointer-events-auto btn btn-primary"
+            onClick={() => setSection("approvals")}
+          >
+            {approvals.data.count} awaiting approval
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

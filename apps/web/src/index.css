@@ -1,9 +1,26 @@
 @import "tailwindcss";
 
+/*
+  Command-center skin.
+  Teal-on-navy, thin borders, soft glow. Everything is CSS so the layout costs no
+  runtime: the only animations are the orb rotation, the waveform, and the
+  status pulse, all of which the compositor handles.
+*/
+
 @theme {
-  --color-ink: #0b1220;
-  --color-panel: #121a2b;
-  --color-line: #1f2b45;
+  --color-void: #03080f;
+  --color-deck: #061220;
+  --color-panel: #071726;
+  --color-panel-2: #0a1f33;
+  --color-line: #123a52;
+  --color-line-hot: #1d6c8e;
+  --color-cyan: #22d3ee;
+  --color-cyan-soft: #7fe3f5;
+  --color-mint: #34d399;
+  --color-amber: #fbbf24;
+  --color-rose: #fb7185;
+  --color-ink: #d3ecf6;
+  --color-mute: #6f9db4;
 }
 
 html,
@@ -14,26 +31,130 @@ body,
 
 body {
   margin: 0;
-  background: var(--color-ink);
+  color: var(--color-ink);
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgba(34, 211, 238, 0.12), transparent 60%),
+    radial-gradient(900px 500px at 90% 110%, rgba(14, 116, 144, 0.16), transparent 60%),
+    var(--color-void);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  letter-spacing: 0.01em;
 }
 
-.card {
-  border: 1px solid var(--color-line);
-  background: var(--color-panel);
-  border-radius: 0.75rem;
+/* Faint grid behind everything, like the reference deck. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(34, 211, 238, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34, 211, 238, 0.055) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse at 50% 40%, black 40%, transparent 85%);
+  z-index: 0;
 }
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #16455e;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------------------------------------------------------------- surfaces */
+
+.panel {
+  position: relative;
+  border: 1px solid var(--color-line);
+  border-radius: 0.5rem;
+  background:
+    linear-gradient(180deg, rgba(15, 48, 70, 0.55), rgba(6, 18, 32, 0.9)),
+    var(--color-panel);
+  box-shadow:
+    inset 0 1px 0 rgba(127, 227, 245, 0.06),
+    0 0 24px rgba(2, 12, 20, 0.6);
+}
+
+.panel-hot {
+  border-color: var(--color-line-hot);
+  box-shadow:
+    inset 0 1px 0 rgba(127, 227, 245, 0.12),
+    0 0 28px rgba(34, 211, 238, 0.14);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--color-line);
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-mute);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* Long titles shrink and ellipsise instead of wrapping the head to two lines. */
+.panel-head > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-head > :not(:first-child) {
+  flex: none;
+}
+
+.panel-body {
+  padding: 0.75rem;
+}
+
+/* Corner ticks, the small framing marks in the reference. */
+.panel::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 0.35rem;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--color-cyan), var(--color-cyan)) top left / 10px 1px no-repeat,
+    linear-gradient(var(--color-cyan), var(--color-cyan)) top left / 1px 10px no-repeat,
+    linear-gradient(var(--color-cyan), var(--color-cyan)) bottom right / 10px 1px no-repeat,
+    linear-gradient(var(--color-cyan), var(--color-cyan)) bottom right / 1px 10px no-repeat;
+  opacity: 0.35;
+}
+
+/* ------------------------------------------------------------------ chrome */
 
 .btn {
-  border-radius: 0.5rem;
-  padding: 0.45rem 0.85rem;
-  font-size: 0.875rem;
+  border-radius: 0.4rem;
+  padding: 0.42rem 0.8rem;
+  font-size: 0.8rem;
   border: 1px solid var(--color-line);
-  transition: background 120ms ease;
+  color: var(--color-ink);
+  background: rgba(10, 31, 51, 0.6);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
 }
 
 .btn:hover:not(:disabled) {
-  background: #1b2740;
+  background: rgba(23, 68, 94, 0.75);
+  border-color: var(--color-line-hot);
 }
 
 .btn:disabled {
@@ -42,31 +163,341 @@ body {
 }
 
 .btn-primary {
-  background: #2563eb;
-  border-color: #2563eb;
-  color: white;
+  background: linear-gradient(180deg, #0ea5c4, #0b7f99);
+  border-color: #22d3ee;
+  color: #021018;
+  font-weight: 600;
+  box-shadow: 0 0 18px rgba(34, 211, 238, 0.28);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #1d4ed8;
+  background: linear-gradient(180deg, #22d3ee, #0ea5c4);
 }
 
 .btn-danger {
-  background: #7f1d1d;
-  border-color: #991b1b;
-  color: #fee2e2;
+  background: rgba(74, 15, 29, 0.75);
+  border-color: #9f1239;
+  color: #fecdd3;
 }
 
 .field {
   border: 1px solid var(--color-line);
-  background: #0e1626;
-  border-radius: 0.5rem;
-  padding: 0.55rem 0.75rem;
+  background: rgba(3, 12, 20, 0.85);
+  border-radius: 0.4rem;
+  padding: 0.5rem 0.7rem;
   width: 100%;
-  color: inherit;
+  color: var(--color-ink);
+  font-size: 0.875rem;
+}
+
+.field::placeholder {
+  color: #48768c;
 }
 
 .field:focus {
-  outline: 2px solid #2563eb;
-  outline-offset: 1px;
+  outline: none;
+  border-color: var(--color-cyan);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.16);
+}
+
+/* Left rail nav entry. */
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.4rem;
+  border: 1px solid transparent;
+  color: var(--color-mute);
+  font-size: 0.82rem;
+  text-align: left;
+  transition:
+    color 120ms ease,
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.rail-item:hover {
+  color: var(--color-ink);
+  background: rgba(18, 58, 82, 0.35);
+}
+
+.rail-item[data-active="true"] {
+  color: #eafcff;
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.18), rgba(34, 211, 238, 0.02));
+  border-color: rgba(34, 211, 238, 0.35);
+  box-shadow: inset 0 0 18px rgba(34, 211, 238, 0.08);
+}
+
+.rail-icon {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: none;
+  opacity: 0.9;
+}
+
+.chip {
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-mute);
+}
+
+.kpi {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+/* -------------------------------------------------------------------- orb */
+
+.orb-stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 210px;
+}
+
+.orb {
+  position: relative;
+  width: 168px;
+  height: 168px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(34, 211, 238, 0.55), rgba(8, 47, 73, 0.65) 55%, rgba(3, 12, 22, 0.2) 72%),
+    radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.35), transparent 45%);
+  box-shadow:
+    0 0 40px rgba(34, 211, 238, 0.35),
+    0 0 90px rgba(14, 116, 144, 0.28),
+    inset 0 0 40px rgba(34, 211, 238, 0.25);
+}
+
+.orb::before {
+  content: "";
+  position: absolute;
+  inset: -14px;
+  border-radius: 50%;
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  border-top-color: rgba(127, 227, 245, 0.9);
+  border-right-color: rgba(34, 211, 238, 0.1);
+  animation: orb-spin 9s linear infinite;
+}
+
+.orb::after {
+  content: "";
+  position: absolute;
+  inset: -30px;
+  border-radius: 50%;
+  border: 1px dashed rgba(34, 211, 238, 0.22);
+  animation: orb-spin 22s linear infinite reverse;
+}
+
+.orb-grid {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background-image:
+    repeating-radial-gradient(circle at 50% 50%, rgba(127, 227, 245, 0.16) 0 1px, transparent 1px 16px),
+    repeating-conic-gradient(from 0deg, rgba(127, 227, 245, 0.12) 0deg 1deg, transparent 1deg 24deg);
+  mix-blend-mode: screen;
+  opacity: 0.75;
+  animation: orb-breathe 6s ease-in-out infinite;
+}
+
+.orb-core-label {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+
+.orb-live .orb {
+  animation: orb-pulse 1.8s ease-in-out infinite;
+}
+
+.orb-dormant .orb {
+  filter: saturate(0.55) brightness(0.8);
+}
+
+@keyframes orb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes orb-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.985);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.015);
+  }
+}
+
+@keyframes orb-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 40px rgba(34, 211, 238, 0.35),
+      0 0 90px rgba(14, 116, 144, 0.28);
+  }
+  50% {
+    box-shadow:
+      0 0 60px rgba(34, 211, 238, 0.6),
+      0 0 130px rgba(14, 116, 144, 0.45);
+  }
+}
+
+/* --------------------------------------------------------------- waveform */
+
+.wave {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 34px;
+}
+
+.wave span {
+  flex: 1;
+  min-width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--color-cyan-soft), rgba(34, 211, 238, 0.25));
+  animation: wave-beat 1.25s ease-in-out infinite;
+}
+
+.wave[data-state="idle"] span {
+  animation: none;
+  height: 12%;
+  opacity: 0.45;
+}
+
+.wave[data-state="live"] span {
+  height: 100%;
+}
+
+@keyframes wave-beat {
+  0%,
+  100% {
+    transform: scaleY(0.28);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+/* ------------------------------------------------------------------ meter */
+
+.meter {
+  position: relative;
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: conic-gradient(var(--meter-color, var(--color-cyan)) calc(var(--meter-value, 0) * 1%), rgba(18, 58, 82, 0.55) 0);
+}
+
+.meter::before {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  border-radius: 50%;
+  background: #061321;
+  border: 1px solid rgba(34, 211, 238, 0.16);
+}
+
+.meter > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ------------------------------------------------------------------- feed */
+
+.feed-item {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 0.4rem;
+  border: 1px solid transparent;
+  border-left-width: 2px;
+  background: rgba(8, 25, 40, 0.55);
+}
+
+.feed-item[data-level="info"] {
+  border-left-color: rgba(34, 211, 238, 0.65);
+}
+.feed-item[data-level="warn"] {
+  border-left-color: var(--color-amber);
+}
+.feed-item[data-level="tip"] {
+  border-left-color: var(--color-mint);
+}
+
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+  animation: dot-pulse 2s ease-in-out infinite;
+}
+
+@keyframes dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ---------------------------------------------------------------- bubbles */
+
+.bubble {
+  max-width: 46rem;
+  border-radius: 0.6rem;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  border: 1px solid var(--color-line);
+  background: rgba(9, 28, 44, 0.85);
+}
+
+.bubble-user {
+  background: linear-gradient(180deg, rgba(14, 116, 144, 0.5), rgba(8, 47, 73, 0.6));
+  border-color: rgba(34, 211, 238, 0.4);
+  color: #eafcff;
+}
+
+.bubble-system {
+  background: rgba(20, 32, 46, 0.7);
+  color: #a9c6d6;
+  font-size: 0.78rem;
+}
+
+.tag {
+  border-radius: 0.25rem;
+  padding: 0.05rem 0.35rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+}
+
+.tag-ok {
+  background: rgba(6, 78, 59, 0.7);
+  color: #a7f3d0;
+}
+
+.tag-bad {
+  background: rgba(88, 19, 32, 0.8);
+  color: #fecdd3;
 }

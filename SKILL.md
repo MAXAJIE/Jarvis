@@ -75,12 +75,14 @@ the feature "works".
 │   │   └── jobs/                # APScheduler: reminders, briefs, rollups
 │   └── web/                     # React + Vite + TS + Tailwind
 │       └── src/
-│           ├── features/chat/   # message list, composer, mode switcher
-│           ├── features/voice/  # push-to-talk, audio worklet, level meter
-│           ├── features/tasks/
-│           ├── features/dashboard/
+│           ├── features/shell/  # top bar, left rail, bottom talk bar, icons
+│           ├── features/core/   # command center panels, orb, waveform, system view
+│           ├── features/chat/   # voice-first conversation: orb, transcript, composer
+│           ├── features/tasks/  # task ledger
 │           ├── features/approvals/
-│           └── lib/api.ts, lib/ws.ts
+│           ├── features/tools/  # registered tool inventory, filter by risk
+│           ├── features/memory/ # recent conversations, tier-1 counters
+│           └── lib/api.ts, lib/ws.ts, lib/overview.ts, lib/approvals.ts
 ├── agent/
 │   ├── graph.py                 # supervisor + specialists, compiled
 │   ├── router.py                # model tier selection

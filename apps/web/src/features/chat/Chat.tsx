@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from "react";
 
 import { api, type ApprovalRequest, type Turn } from "../../lib/api";
 import { ChatSocket, type ServerFrame } from "../../lib/ws";
+import { Orb, Waveform } from "../core/Orb";
 
 type Lang = "en" | "zh-TW";
+type Mode = "talking" | "typing";
 
 interface Bubble {
   id: number;
@@ -19,80 +21,105 @@ let nextId = 1;
 /** The last conversation this browser talked in; the server owns the transcript. */
 const CONVERSATION_KEY = "jarvis.conversation";
 const LANG_KEY = "jarvis.lang";
+const MODE_KEY = "jarvis.mode";
 
-function storedConversation(): string | null {
+function stored(key: string): string | null {
   try {
-    return window.localStorage.getItem(CONVERSATION_KEY);
+    return window.localStorage.getItem(key);
   } catch {
     return null;
   }
 }
 
-export default function Chat({ onDecided }: { onDecided: () => void }) {
+export default function Chat({
+  onDecided,
+  voiceReady,
+  voiceHint,
+  prompt,
+  onPromptConsumed,
+}: {
+  onDecided: () => void;
+  voiceReady: boolean;
+  voiceHint: string;
+  prompt: string | null;
+  onPromptConsumed: () => void;
+}) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState<"connecting" | "open" | "closed">("connecting");
-  const [lang, setLang] = useState<Lang>(() => {
-    try {
-      return window.localStorage.getItem(LANG_KEY) === "zh-TW" ? "zh-TW" : "en";
-    } catch {
-      return "en";
-    }
-  });
-  const [mode, setMode] = useState<"typing" | "talking">("typing");
+  const [lang, setLang] = useState<Lang>(() => (stored(LANG_KEY) === "zh-TW" ? "zh-TW" : "en"));
+  const [mode, setMode] = useState<Mode>(() => (stored(MODE_KEY) === "typing" ? "typing" : "talking"));
   const [provider, setProvider] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const socketRef = useRef<ChatSocket | null>(null);
   const langRef = useRef<Lang>(lang);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
   langRef.current = lang;
 
   useEffect(() => {
-    const socket = new ChatSocket((frame: ServerFrame) => {
-      if (frame.type === "ready") {
-        setProvider(frame.provider);
-        const resumed = frame.lang === "zh-TW" ? "zh-TW" : "en";
-        setLang(resumed);
-        try {
-          window.localStorage.setItem(CONVERSATION_KEY, frame.conversation_id);
-          window.localStorage.setItem(LANG_KEY, resumed);
-        } catch {
-          /* storage can be unavailable; the transcript still loads below */
+    const socket = new ChatSocket(
+      (frame: ServerFrame) => {
+        if (frame.type === "ready") {
+          setProvider(frame.provider);
+          const resumed = frame.lang === "zh-TW" ? "zh-TW" : "en";
+          setLang(resumed);
+          try {
+            window.localStorage.setItem(CONVERSATION_KEY, frame.conversation_id);
+            window.localStorage.setItem(LANG_KEY, resumed);
+          } catch {
+            /* storage can be unavailable; the transcript still loads below */
+          }
+          void loadHistory(frame.conversation_id);
+          return;
         }
-        void loadHistory(frame.conversation_id);
-        return;
-      }
-      if (frame.type === "error") {
-        setBubbles((current) => [
-          ...current,
-          { id: nextId++, role: "system", text: frame.message },
-        ]);
-        return;
-      }
-      if (frame.type === "turn") {
-        setBusy(false);
-        setBubbles((current) => [
-          ...current,
-          {
-            id: nextId++,
-            role: "assistant",
-            text:
-              frame.answer ||
-              (frame.approval
-                ? langRef.current === "zh-TW"
-                  ? "等你批准先做。"
-                  : "Waiting for your approval."
-                : "(no answer)"),
-            events: frame.events.map((event) => ({ name: event.name, ok: event.ok })),
-            approval: frame.approval,
-            tainted: frame.tainted,
-          },
-        ]);
-      }
-    }, setStatus, storedConversation);
+        if (frame.type === "error") {
+          setBubbles((current) => [...current, { id: nextId++, role: "system", text: frame.message }]);
+          return;
+        }
+        if (frame.type === "turn") {
+          setBusy(false);
+          setBubbles((current) => [
+            ...current,
+            {
+              id: nextId++,
+              role: "assistant",
+              text:
+                frame.answer ||
+                (frame.approval
+                  ? langRef.current === "zh-TW"
+                    ? "等你批准先做。"
+                    : "Waiting for your approval."
+                  : "(no answer)"),
+              events: frame.events.map((event) => ({ name: event.name, ok: event.ok })),
+              approval: frame.approval,
+              tainted: frame.tainted,
+            },
+          ]);
+        }
+      },
+      setStatus,
+      () => stored(CONVERSATION_KEY),
+    );
     socketRef.current = socket;
     socket.connect();
     return () => socket.close();
   }, []);
+
+  useEffect(() => {
+    const node = transcriptRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [bubbles, busy]);
+
+  // A quick command from the command center arrives as a prompt.
+  useEffect(() => {
+    if (!prompt) return;
+    if (status !== "open") return;
+    dispatch(prompt);
+    onPromptConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prompt, status]);
 
   async function loadHistory(conversationId: string) {
     try {
@@ -114,13 +141,17 @@ export default function Chat({ onDecided }: { onDecided: () => void }) {
     }
   }
 
-  function send() {
-    const text = draft.trim();
-    if (!text || !socketRef.current || busy) return;
-    setBubbles((current) => [...current, { id: nextId++, role: "user", text }]);
+  function dispatch(text: string) {
+    const body = text.trim();
+    if (!body || !socketRef.current || busy) return;
+    setBubbles((current) => [...current, { id: nextId++, role: "user", text: body }]);
     setDraft("");
     setBusy(true);
-    socketRef.current.send({ type: "user_message", text });
+    socketRef.current.send({ type: "user_message", text: body });
+  }
+
+  function send() {
+    dispatch(draft);
   }
 
   function changeLang(next: Lang) {
@@ -133,11 +164,30 @@ export default function Chat({ onDecided }: { onDecided: () => void }) {
     socketRef.current?.send({ type: "set_lang", lang: next });
   }
 
+  function changeMode(next: Mode) {
+    setMode(next);
+    try {
+      window.localStorage.setItem(MODE_KEY, next);
+    } catch {
+      /* ignore */
+    }
+    if (next === "typing") window.setTimeout(() => inputRef.current?.focus(), 0);
+  }
+
+  function pressOrb() {
+    if (voiceReady) {
+      setNotice("Voice transport ships in W5; the keys are present but the loop is not built.");
+    } else {
+      setNotice(voiceHint);
+    }
+    changeMode("typing");
+  }
+
   async function decide(id: string, decision: "approved" | "rejected") {
-    const body = await api<{ decision: string; turn: Turn | null }>(
-      `/api/approvals/${id}/decide`,
-      { method: "POST", body: JSON.stringify({ decision }) },
-    );
+    const body = await api<{ decision: string; turn: Turn | null }>(`/api/approvals/${id}/decide`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    });
     setBubbles((current) => [
       ...current,
       { id: nextId++, role: "system", text: `approval ${body.decision}` },
@@ -156,60 +206,87 @@ export default function Chat({ onDecided }: { onDecided: () => void }) {
   }
 
   return (
-    <div className="card flex h-[calc(100vh-7rem)] flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-[var(--color-line)] p-3">
-        <div className="flex overflow-hidden rounded-lg border border-[var(--color-line)]">
-          {(["typing", "talking"] as const).map((value) => (
+    <div className="panel flex min-h-0 flex-1 flex-col">
+      <div className="panel-head">
+        <span className="flex-1">Conversation</span>
+        <div className="flex overflow-hidden rounded border border-[var(--color-line)]">
+          {(["talking", "typing"] as const).map((value) => (
             <button
               key={value}
               type="button"
-              className={`px-3 py-1.5 text-sm ${mode === value ? "bg-blue-600 text-white" : ""}`}
-              onClick={() => setMode(value)}
-              disabled={value === "talking"}
-              title={value === "talking" ? "needs DEEPGRAM_API_KEY + AZURE_SPEECH_KEY" : undefined}
+              onClick={() => changeMode(value)}
+              className={`px-2 py-0.5 text-[0.62rem] tracking-[0.12em] ${
+                mode === value ? "bg-cyan-500/20 text-cyan-100" : "text-[var(--color-mute)]"
+              }`}
             >
-              {value === "typing" ? "Typing" : "Talking"}
+              {value === "talking" ? "VOICE" : "TYPING"}
             </button>
           ))}
         </div>
-        <div className="flex overflow-hidden rounded-lg border border-[var(--color-line)]">
+        <div className="flex overflow-hidden rounded border border-[var(--color-line)]">
           {(["en", "zh-TW"] as const).map((value) => (
             <button
               key={value}
               type="button"
-              className={`px-3 py-1.5 text-sm ${lang === value ? "bg-slate-700" : ""}`}
               onClick={() => changeLang(value)}
+              className={`px-2 py-0.5 text-[0.62rem] ${
+                lang === value ? "bg-cyan-500/20 text-cyan-100" : "text-[var(--color-mute)]"
+              }`}
             >
-              {value === "en" ? "English" : "繁體中文"}
+              {value === "en" ? "EN" : "繁中"}
             </button>
           ))}
         </div>
-        <span className="ml-auto text-xs text-slate-500">
+        <span className="text-[0.66rem] text-[var(--color-mute)]">
           ws:{status}
-          {provider ? ` · model:${provider}` : ""}
+          {provider ? ` · ${provider}` : ""}
         </span>
       </div>
 
-      <div className="flex-1 space-y-3 overflow-y-auto p-4">
+      {mode === "talking" ? (
+        <div className="flex shrink-0 flex-col items-center gap-2 border-b border-[var(--color-line)] bg-[radial-gradient(600px_200px_at_50%_0%,rgba(34,211,238,0.12),transparent)] px-4 py-4">
+          <Orb
+            state={voiceReady ? "idle" : "blocked"}
+            subtitle={voiceReady ? "Voice loop lands in W5" : voiceHint}
+            onClick={pressOrb}
+            size={132}
+          />
+          <div className="text-center text-[0.66rem] leading-relaxed text-[var(--color-mute)]">
+            <div className="tracking-[0.24em] text-cyan-100">
+              {voiceReady ? "TALK TO JARVIS" : "VOICE OFFLINE"}
+            </div>
+            <div className="mt-0.5 max-w-md">{voiceReady ? "Keys present — the streaming turn ships in W5." : voiceHint}</div>
+          </div>
+          <Waveform state="idle" bars={44} />
+          <button type="button" className="btn" onClick={() => changeMode("typing")}>
+            Type instead
+          </button>
+        </div>
+      ) : null}
+
+      {notice ? (
+        <div className="shrink-0 border-b border-amber-700/40 bg-amber-500/10 px-3 py-1.5 text-[0.66rem] text-amber-200">
+          {notice}
+        </div>
+      ) : null}
+
+      <div ref={transcriptRef} className="mx-auto min-h-0 w-full max-w-3xl flex-1 space-y-2 overflow-y-auto p-3">
         {bubbles.length === 0 ? (
-          <p className="text-sm text-slate-500">
-            Try: “plan my week”, “add task buy milk”, “list my tasks”, “remember that I live in
-            Kuala Lumpur”.
+          <p className="text-[0.72rem] leading-relaxed text-[var(--color-mute)]">
+            Say “plan my week”, “add task buy milk”, “list my tasks”, or “remember that I live in
+            Kuala Lumpur”. Writes to memory wait for your confirmation; anything external or
+            destructive stops for approval.
           </p>
         ) : null}
         {bubbles.map((bubble) => (
-          <div key={bubble.id} className={bubble.role === "user" ? "text-right" : ""}>
+          <div key={bubble.id} className={bubble.role === "user" ? "flex justify-end" : "flex justify-start"}>
             <div
-              className={`inline-block max-w-[46rem] whitespace-pre-wrap rounded-xl px-3 py-2 text-sm ${
-                bubble.role === "user"
-                  ? "bg-blue-600 text-white"
-                  : bubble.role === "system"
-                    ? "bg-slate-800 text-slate-300"
-                    : "bg-[#0e1626]"
+              className={`bubble ${
+                bubble.role === "user" ? "bubble-user" : bubble.role === "system" ? "bubble-system" : ""
               }`}
             >
               {bubble.tainted ? (
-                <div className="mb-1 text-xs text-amber-400">
+                <div className="mb-1 text-[0.62rem] text-amber-300">
                   this turn contained outside content
                 </div>
               ) : null}
@@ -219,9 +296,7 @@ export default function Chat({ onDecided }: { onDecided: () => void }) {
                   {bubble.events.map((event, index) => (
                     <span
                       key={`${event.name}-${index}`}
-                      className={`rounded px-1.5 py-0.5 text-xs ${
-                        event.ok ? "bg-emerald-900 text-emerald-200" : "bg-red-900 text-red-200"
-                      }`}
+                      className={`tag ${event.ok ? "tag-ok" : "tag-bad"}`}
                     >
                       {event.name}
                       {event.ok ? "" : " ✕"}
@@ -230,7 +305,7 @@ export default function Chat({ onDecided }: { onDecided: () => void }) {
                 </div>
               ) : null}
               {bubble.approval ? (
-                <div className="mt-2 rounded-lg border border-amber-700 bg-amber-950/40 p-2 text-xs">
+                <div className="mt-2 rounded border border-amber-700/60 bg-amber-500/5 p-2 text-[0.68rem]">
                   <div className="font-semibold text-amber-200">
                     {bubble.approval.tool_name} · {bubble.approval.risk}
                   </div>
@@ -258,21 +333,28 @@ export default function Chat({ onDecided }: { onDecided: () => void }) {
             </div>
           </div>
         ))}
-        {busy ? <p className="text-xs text-slate-500">thinking…</p> : null}
+        {busy ? <p className="text-[0.66rem] text-[var(--color-mute)]">thinking…</p> : null}
       </div>
 
       <form
-        className="flex gap-2 border-t border-[var(--color-line)] p-3"
+        className="flex shrink-0 items-center gap-2 border-t border-[var(--color-line)] p-2.5"
         onSubmit={(event) => {
           event.preventDefault();
           send();
         }}
       >
         <input
+          ref={inputRef}
           className="field"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder={lang === "zh-TW" ? "講嘢或者打字…" : "Type a message…"}
+          placeholder={
+            mode === "talking"
+              ? "Type your message (voice ships in W5)"
+              : lang === "zh-TW"
+                ? "打字或者講嘢…"
+                : "Type a message…"
+          }
         />
         <button className="btn btn-primary" type="submit" disabled={busy || status !== "open"}>
           Send

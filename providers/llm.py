@@ -180,6 +180,8 @@ def _plan(text: str, message_id: str = "") -> list[ToolCall]:
 
     if "task" in lowered and any(w in lowered for w in ("add", "create", "remind")):
         title = re.sub(r"^.*?(?:add|create|remind me to)\s+", "", text, flags=re.IGNORECASE)
+        # "add task buy milk" must not create a task called "task buy milk".
+        title = re.sub(r"^(?:a\s+)?task\s+", "", title.strip(), flags=re.IGNORECASE)
         if "remind" in lowered:
             return [
                 ToolCall(

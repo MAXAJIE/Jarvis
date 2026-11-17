@@ -3,7 +3,7 @@ import { useState } from "react";
 
 import { api, type Task } from "../../lib/api";
 
-export default function Tasks() {
+export default function Tasks({ query }: { query: string }) {
   const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
 
@@ -14,7 +14,7 @@ export default function Tasks() {
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["tasks"] });
-    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    void queryClient.invalidateQueries({ queryKey: ["overview"] });
   };
 
   const create = useMutation({
@@ -37,10 +37,24 @@ export default function Tasks() {
     onSuccess: invalidate,
   });
 
+  const needle = query.trim().toLowerCase();
+  const rows = (tasks.data ?? []).filter(
+    (task) => !needle || task.title.toLowerCase().includes(needle),
+  );
+  const open = rows.filter((task) => task.status !== "done").length;
+  const done = rows.length - open;
+
   return (
-    <div className="card space-y-4 p-4">
+    <div className="panel flex min-h-0 flex-1 flex-col">
+      <div className="panel-head">
+        <span className="flex-1">Task Ledger</span>
+        <span>
+          {open} open · {done} done
+        </span>
+      </div>
+
       <form
-        className="flex gap-2"
+        className="flex shrink-0 gap-2 border-b border-[var(--color-line)] p-2.5"
         onSubmit={(event) => {
           event.preventDefault();
           if (title.trim()) create.mutate(title.trim());
@@ -57,33 +71,56 @@ export default function Tasks() {
         </button>
       </form>
 
-      {tasks.isLoading ? <p className="text-sm text-slate-400">loading…</p> : null}
-      {tasks.data?.length === 0 ? (
-        <p className="text-sm text-slate-500">No tasks yet.</p>
-      ) : null}
-
-      <ul className="divide-y divide-[var(--color-line)]">
-        {tasks.data?.map((task) => (
-          <li key={task.id} className="flex flex-wrap items-center gap-2 py-2">
-            <span className="min-w-0 flex-1 truncate text-sm">{task.title}</span>
-            <span className="text-xs text-slate-500">{task.status}</span>
-            {task.due_at ? (
-              <span className="text-xs text-slate-500">{task.due_at.slice(0, 10)}</span>
-            ) : null}
-            <button
-              className="btn"
-              type="button"
-              disabled={task.status === "done"}
-              onClick={() => patch.mutate({ id: task.id, status: "done" })}
+      <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
+        {tasks.isLoading ? (
+          <p className="text-[0.72rem] text-[var(--color-mute)]">loading…</p>
+        ) : null}
+        {!tasks.isLoading && rows.length === 0 ? (
+          <p className="text-[0.72rem] text-[var(--color-mute)]">
+            {needle ? "Nothing matches that search." : "No tasks yet."}
+          </p>
+        ) : null}
+        <ul className="space-y-1">
+          {rows.map((task) => (
+            <li
+              key={task.id}
+              className="flex flex-wrap items-center gap-2 rounded border border-[var(--color-line)] bg-[rgba(8,25,40,0.55)] px-2 py-1.5"
             >
-              Done
-            </button>
-            <button className="btn btn-danger" type="button" onClick={() => remove.mutate(task.id)}>
-              Delete
-            </button>
-          </li>
-        ))}
-      </ul>
+              <span className="min-w-0 flex-1 truncate text-[0.76rem]" title={task.title}>
+                {task.title}
+              </span>
+              <span
+                className={`tag ${
+                  task.status === "done" ? "tag-ok" : "bg-cyan-500/10 text-cyan-200"
+                }`}
+              >
+                {task.status}
+              </span>
+              {task.due_at ? (
+                <span className="kpi text-[0.62rem] text-[var(--color-mute)]">
+                  {task.due_at.slice(0, 10)}
+                </span>
+              ) : null}
+              <span className="text-[0.62rem] text-[var(--color-mute)]">P{task.priority}</span>
+              <button
+                className="btn !px-2 !py-0.5 !text-[0.66rem]"
+                type="button"
+                disabled={task.status === "done"}
+                onClick={() => patch.mutate({ id: task.id, status: "done" })}
+              >
+                Done
+              </button>
+              <button
+                className="btn btn-danger !px-2 !py-0.5 !text-[0.66rem]"
+                type="button"
+                onClick={() => remove.mutate(task.id)}
+              >
+                Delete
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

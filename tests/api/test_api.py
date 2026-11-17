@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 
 import pyotp
 import pytest
@@ -78,6 +79,38 @@ def test_protected_routes_refuse_anonymous(client: TestClient) -> None:
     assert client.get("/api/tasks").status_code == 401
     assert client.get("/api/metrics/dashboard").status_code == 401
     assert client.get("/api/approvals").status_code == 401
+    assert client.get("/api/system/overview").status_code == 401
+
+
+def test_overview_feeds_the_command_center_from_real_rows(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every panel number must come from a row, never from a constant."""
+    login(client, monkeypatch)
+    assert client.post("/api/tasks", json={"title": "audit the ledger"}).status_code == 201
+
+    body = client.get("/api/system/overview").json()
+
+    assert body["health"]["status"] == "degraded"  # no provider keys in tests
+    assert "llm" in body["health"]["missing"]
+    assert body["counters"]["open_tasks"] == 1
+    assert body["counters"]["facts"] == 0
+    assert body["budget"]["ceiling_usd"] == 20.0
+    assert body["budget"]["remaining_usd"] <= 8.2
+    assert len(body["tools"]) == 28
+    assert sum(body["tools_by_risk"].values()) == 28
+    assert body["voice"]["transport_ready"] is False
+    assert body["llm"]["configured"] is False
+    assert [row["title"] for row in body["timeline"]] == []  # no due date set
+    assert body["timeline"] == []
+
+    task_id = client.get("/api/tasks").json()[0]["id"]
+    soon = (datetime.now(UTC) + timedelta(days=2)).isoformat()
+    client.patch(f"/api/tasks/{task_id}", json={"due_at": soon})
+    body = client.get("/api/system/overview").json()
+    assert body["timeline"][0]["title"] == "audit the ledger"
+    assert body["timeline"][0]["overdue"] is False
+    assert body["timeline"][0]["due_at"].endswith("+00:00")
 
 
 def test_task_lifecycle_and_dashboard(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
