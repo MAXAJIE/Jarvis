@@ -21,6 +21,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -29,7 +30,7 @@ from pydantic import ValidationError
 from agent.policy import enforce_budget, filter_tools, needs_approval, taint_after
 from agent.router import route_specialist
 from apps.api.services.audit import ensure_approval, write_tool_run
-from apps.api.services.budget import budget_state, record_llm_cost
+from apps.api.services.budget import budget_state, record_cost, record_llm_cost
 from packages.contracts.errors import BudgetExceeded, ToolError
 from packages.contracts.tool import Lang, Tool, ToolContext
 from providers.llm import PRICES_PER_MTOK, ChatMessage, LLMClient, ToolSpec
@@ -148,13 +149,37 @@ def build_graph(deps: GraphDeps, checkpointer: Any) -> Any:
         reply = await deps.client.chat(
             messages, [_spec(t) for t in visible], deadline_ms=ctx.deadline_ms
         )
+        served_provider = deps.client.provider
+        served_model = deps.client.model
+        if reply.attempts:
+            served = reply.attempts[-1]
+            served_provider, served_model = served.provider, served.model
+        # P4: a provider that refused still produced an attempt worth recording.
+        # Otherwise a chain that silently degrades is invisible in the ledger.
+        for failed in reply.attempts[:-1]:
+            if not failed.ok:
+                await record_cost(
+                    kind="llm",
+                    provider=failed.provider,
+                    model=failed.model,
+                    units=Decimal(0),
+                    unit_name="tokens",
+                    unit_price_usd=Decimal(0),
+                    usd=Decimal(0),
+                    conversation_id=ctx.conversation_id,
+                    meta={
+                        "failed": True,
+                        "status": failed.status,
+                        "error": failed.error,
+                    },
+                )
         await record_llm_cost(
-            provider=deps.client.provider,
-            model=deps.client.model,
+            provider=served_provider,
+            model=served_model,
             tokens_in=reply.tokens_in,
             tokens_out=reply.tokens_out,
             conversation_id=ctx.conversation_id,
-            price_per_mtok=PRICES_PER_MTOK.get(deps.client.model),
+            price_per_mtok=PRICES_PER_MTOK.get(served_model),
             reported_usd=reply.cost_usd,
         )
         transcript = list(state["messages"])

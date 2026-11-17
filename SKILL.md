@@ -99,11 +99,12 @@ the feature "works".
 │   ├── sandbox.py               # shell, python_run, browser (Docker exec)
 │   └── web.py                   # web_fetch → always tainted
 ├── media/
-│   ├── stt.py                   # Deepgram, explicit language
-│   ├── tts.py                   # Azure, voice id per language
-│   └── audio.py                 # framing, μ-law ↔ PCM for Twilio
+│   ├── audio.py                 # framing, μ-law ↔ PCM for Twilio
+│   └── tts.py                   # one sentence → mp3: Deepgram Aura (en), ElevenLabs (multilingual)
 ├── providers/
-│   ├── twilio.py, deepgram.py, azure_speech.py, google_oauth.py, openai_client.py
+│   ├── catalog.py               # provider table: base_url, key_env, default model (adding one = a row)
+│   ├── llm.py                   # HTTPChatClient (OpenAI-compatible) + ChainClient fallbacks
+│   └── clients.py               # Twilio, Deepgram, Google OAuth, Azure speech
 ├── packages/
 │   └── contracts/               # Tool protocol, RiskLevel, shared Pydantic models
 ├── sandbox/

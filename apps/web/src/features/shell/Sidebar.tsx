@@ -27,6 +27,12 @@ export function Sidebar({
 }) {
   const counters = overview?.counters as Record<string, number> | undefined;
   const voiceReady = Boolean(overview?.voice.transport_ready);
+  // Naming a key that is already set is worse than saying nothing: the panel
+  // used to demand DEEPGRAM_API_KEY while health reported it configured.
+  const speechMissing = [
+    !overview?.voice.stt_ready ? "DEEPGRAM_API_KEY" : "",
+    !overview?.voice.tts_ready ? overview?.voice.tts_key_env ?? "" : "",
+  ].filter(Boolean);
 
   return (
     <aside className="hidden w-60 shrink-0 flex-col gap-3 border-r border-[var(--color-line)] bg-[rgba(4,12,20,0.6)] p-3 md:flex">
@@ -66,11 +72,21 @@ export function Sidebar({
           <p className="text-[0.68rem] leading-relaxed text-[var(--color-mute)]">
             {voiceReady ? (
               "Speech keys present. The streaming turn lands in W5."
+            ) : speechMissing.length === 0 ? (
+              <>
+                Ears and mouth are configured ({overview?.voice.stt} in, {overview?.voice.tts} out).
+                The turn that connects them is W5 and not built, so the orb stays dormant. Typing
+                works now.
+              </>
             ) : (
               <>
-                Speech is not configured: <code className="text-cyan-200">DEEPGRAM_API_KEY</code>{" "}
-                and <code className="text-cyan-200">AZURE_SPEECH_KEY</code> are empty. Typing works
-                now; the orb stays dormant until the loop exists.
+                Missing:{" "}
+                {speechMissing.map((name) => (
+                  <code key={name} className="mr-1 text-cyan-200">
+                    {name}
+                  </code>
+                ))}
+                Typing works now; the orb stays dormant until the streaming turn (W5) exists.
               </>
             )}
           </p>

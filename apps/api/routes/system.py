@@ -34,6 +34,7 @@ from apps.api.db.session import session_scope
 from apps.api.routes.metrics import health
 from apps.api.services.audit import preview_for
 from apps.api.services.budget import dashboard
+from media.tts import voice_status
 from packages.contracts.tool import RiskLevel
 from tools.registry import SPECIALIST_TOOLS, build_registry
 
@@ -289,12 +290,7 @@ async def overview(user_id: str = Depends(require_session)) -> dict[str, Any]:
             "model": settings.llm_model_strong if settings.llm_configured else "stub",
             "key_env": settings.llm_key_env_name,
         },
-        "voice": {
-            "configured": bool(settings.deepgram_api_key and settings.azure_speech_key),
-            "stt": "deepgram" if settings.deepgram_api_key else "",
-            "tts": settings.azure_voice_en if settings.azure_speech_key else "",
-            "transport_ready": False,  # the streaming turn ships in W5; never claim otherwise
-        },
+        "voice": voice_status(),
     }
 
 

@@ -87,7 +87,16 @@ export interface Overview {
   tools: ToolRow[];
   tools_by_risk: Record<string, number>;
   llm: { provider: string; configured: boolean; model: string };
-  voice: { configured: boolean; stt: string; tts: string; transport_ready: boolean };
+  voice: {
+    stt: string;
+    stt_ready: boolean;
+    tts: string;
+    tts_ready: boolean;
+    tts_voice: string;
+    tts_key_env: string;
+    free_chars_per_month: number | null;
+    transport_ready: boolean;
+  };
 }
 
 /**

@@ -21,6 +21,7 @@ import httpx
 from pydantic import BaseModel
 
 from apps.api.config import get_settings
+from providers.catalog import ProviderSpec, spec_for
 
 Role = Literal["system", "user", "assistant", "tool"]
 
@@ -61,6 +62,16 @@ class LLMReply(BaseModel):
     # Provider-reported spend, when the provider reports one (OpenRouter does).
     # Preferred over the price table: the table is a guess about a moving price.
     cost_usd: float | None = None
+    # Every provider the chain tried, so failures reach the ledger too (P4).
+    attempts: list[AttemptTrace] = []
+
+
+class AttemptTrace(BaseModel):
+    provider: str
+    model: str
+    ok: bool
+    status: int | None = None
+    error: str = ""
 
 
 class LLMClient(Protocol):
@@ -375,6 +386,87 @@ class StubClient:
         return LLMReply(content=_summarise(user_text, messages, zh))
 
 
+def _why(body: str, limit: int = 300) -> str:
+    """The provider's own words, trimmed. Never the request, so no key leaks."""
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return body.strip()[:limit]
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    if isinstance(error, dict):
+        return str(error.get("message") or error)[:limit]
+    if isinstance(error, str):
+        return error[:limit]
+    return body.strip()[:limit]
+
+
+def _tool_call_in(content: str) -> dict[str, Any] | None:
+    """The assistant step the graph persists as JSON text, if this message is one."""
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, dict):
+        call = parsed.get("tool_call")
+        if isinstance(call, dict) and call.get("name"):
+            return call
+    return None
+
+
+def wire_messages(messages: Sequence[ChatMessage]) -> list[dict[str, Any]]:
+    """Translate the agent's compact transcript into the API's tool-call shape.
+
+    The graph stores a tool step as ``{"tool_call": {...}}`` inside the assistant
+    content and its result as a bare ``role="tool"`` message: compact to persist,
+    and enough for the stub, which parses that JSON. Every OpenAI-compatible API
+    requires something stricter - the assistant message carries a ``tool_calls``
+    array with ids, and each tool message names the id it answers - and rejects a
+    ``tool`` message without one ("messages[3]: tool messages must include a
+    non-empty string tool_call_id"). Only a real provider ever said so.
+    """
+    wire: list[dict[str, Any]] = []
+    pending_id: str | None = None
+    for index, message in enumerate(messages):
+        if message.role == "assistant":
+            call = _tool_call_in(message.content)
+            if call is not None:
+                pending_id = f"call_{index}"
+                arguments = call.get("args") or call.get("arguments") or {}
+                wire.append(
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": pending_id,
+                                "type": "function",
+                                "function": {
+                                    "name": str(call.get("name")),
+                                    "arguments": json.dumps(arguments),
+                                },
+                            }
+                        ],
+                    }
+                )
+                continue
+            wire.append({"role": "assistant", "content": message.content})
+            continue
+        if message.role == "tool":
+            entry: dict[str, Any] = {"role": "tool", "content": message.content}
+            if pending_id:
+                entry["tool_call_id"] = pending_id
+            wire.append(entry)
+            continue
+        wire.append(
+            {
+                "role": message.role,
+                "content": message.content,
+                **({"name": message.name} if message.name else {}),
+            }
+        )
+    return wire
+
+
 class LLMNotConfigured(RuntimeError):
     """The selected provider has no key.
 
@@ -405,25 +497,43 @@ class UnconfiguredClient:
         )
 
 
-class HTTPChatClient:
-    """OpenAI-compatible chat completions. Serves both openai and openrouter.
+class ProviderHTTPError(RuntimeError):
+    """A provider said no. ``retryable`` decides whether the chain moves on."""
 
-    The two differ in base URL, key, and one extra header; everything else is the
-    same wire format, so branching on provider inside a second client class would
-    be duplication that drifts.
+    def __init__(self, provider: str, status: int, detail: str) -> None:
+        super().__init__(f"{provider} http {status}: {detail}")
+        self.provider = provider
+        self.status = status
+        self.detail = detail
+        # 429 rate limit, 402 out of credit, 5xx and 408 are worth another
+        # provider's time. 400/401/403/404 are about *this* request or key and
+        # would fail the same way everywhere: retrying just doubles the latency.
+        self.retryable = status in {402, 408, 409, 425, 429} or status >= 500
+
+
+class HTTPChatClient:
+    """OpenAI-compatible chat completions, for any provider in the catalog.
+
+    Providers differ in base URL, key and one extra header; everything else is
+    the same wire format, so branching inside a second client class would be
+    duplication that drifts.
     """
 
-    def __init__(self, provider: str, model: str) -> None:
-        self.provider = provider
+    def __init__(self, spec: ProviderSpec, model: str, api_key: str, referer: str = "") -> None:
+        self.provider = spec.name
         self.model = model
+        self.base_url = spec.base_url
+        self.spec = spec
+        self._api_key = api_key
+        self._referer = referer
 
     def _headers(self) -> dict[str, str]:
-        settings = get_settings()
-        headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
+        headers = {"Authorization": f"Bearer {self._api_key}"}
         if self.provider == "openrouter":
             # OpenRouter's attribution headers; without them requests still work,
             # they just show up unattributed in the operator's activity log.
-            headers["HTTP-Referer"] = settings.app_base_url
+            if self._referer:
+                headers["HTTP-Referer"] = self._referer
             headers["X-Title"] = "Jarvis"
         return headers
 
@@ -434,13 +544,9 @@ class HTTPChatClient:
         *,
         deadline_ms: int,
     ) -> LLMReply:
-        settings = get_settings()
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [
-                {"role": m.role, "content": m.content, **({"name": m.name} if m.name else {})}
-                for m in messages
-            ],
+            "messages": wire_messages(messages),
             "temperature": 0.2,
         }
         if tools:
@@ -461,12 +567,15 @@ class HTTPChatClient:
         timeout = max(1.0, deadline_ms / 1000.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
-                f"{settings.llm_base_url.rstrip('/')}/chat/completions",
+                f"{self.base_url.rstrip('/')}/chat/completions",
                 json=payload,
                 headers=self._headers(),
             )
         if response.status_code != 200:
-            raise RuntimeError(f"llm http {response.status_code}")
+            # The provider's body names the offending field. Dropping it turns a
+            # one-line fix into a guessing game, and 'llm http 400' in the chat
+            # bubble tells the operator nothing.
+            raise ProviderHTTPError(self.provider, response.status_code, _why(response.text))
         body: dict[str, Any] = response.json()
         choice = (body.get("choices") or [{}])[0]
         message = choice.get("message") or {}
@@ -489,26 +598,98 @@ class HTTPChatClient:
         )
 
 
+class ChainClient:
+    """Primary provider, then fallbacks, in order.
+
+    A free tier rate-limits. Without a chain that is a dead turn; with one it is a
+    slower turn. Failures are not swallowed: every attempt is reported back in
+    ``LLMReply.attempts`` so the ledger can record what happened (P4), and the
+    operator can see which engine actually answered.
+    """
+
+    def __init__(self, clients: Sequence[HTTPChatClient]) -> None:
+        if not clients:
+            raise ValueError("ChainClient needs at least one client")
+        self._clients = list(clients)
+        self.provider = self._clients[0].provider
+        self.model = self._clients[0].model
+
+    async def chat(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec],
+        *,
+        deadline_ms: int,
+    ) -> LLMReply:
+        attempts: list[AttemptTrace] = []
+        last: Exception | None = None
+        for client in self._clients:
+            try:
+                reply = await client.chat(messages, tools, deadline_ms=deadline_ms)
+            except (ProviderHTTPError, httpx.HTTPError, TimeoutError) as exc:
+                retryable = getattr(exc, "retryable", True)
+                attempts.append(
+                    AttemptTrace(
+                        provider=client.provider,
+                        model=client.model,
+                        ok=False,
+                        status=getattr(exc, "status", None),
+                        error=str(exc)[:300],
+                    )
+                )
+                last = exc
+                if not retryable:
+                    raise
+                continue
+            # The final attempt names whoever answered, so cost rows and the UI
+            # do not credit the primary for the fallback's work.
+            attempts.append(AttemptTrace(provider=client.provider, model=client.model, ok=True))
+            return LLMReply(
+                content=reply.content,
+                tool_calls=reply.tool_calls,
+                tokens_in=reply.tokens_in,
+                tokens_out=reply.tokens_out,
+                cost_usd=reply.cost_usd,
+                attempts=attempts,
+            )
+        raise last if last is not None else RuntimeError("no provider answered")
+
+
 def get_client() -> LLMClient:
-    """Build the selected client. A missing key yields a refusing client, not the stub.
+    """Build the chain. A missing key yields a refusing client, not the stub.
 
     Prod never reaches this point without a key: ``settings_guard`` exits first.
     Dev boots with a refusing client so ``/api/health`` and the chat can both name
     the exact variable to fill.
     """
     settings = get_settings()
-    if settings.llm_provider in {"openai", "openrouter"}:
-        if settings.llm_provider == "openrouter" and "/" not in settings.llm_model_strong:
+    if settings.llm_provider == "stub":
+        return StubClient()
+    clients: list[HTTPChatClient] = []
+    for provider in settings.llm_chain:
+        spec = spec_for(provider)
+        if spec is None:
+            continue
+        model = settings.model_for(provider)
+        if spec.requires_vendor_prefix and "/" not in model:
             # OpenRouter addresses models as vendor/model. A bare "gpt-4o-mini"
             # 404s at request time, halfway through a turn, which is a far worse
             # failure than refusing to build the client.
             raise RuntimeError(
-                "LLM_PROVIDER=openrouter needs an OpenRouter slug such as "
-                f"'openai/gpt-4o-mini' in LLM_MODEL_STRONG, got {settings.llm_model_strong!r}"
+                f"LLM_PROVIDER={provider} needs a vendor-prefixed model such as "
+                f"'openai/gpt-4o-mini', got {model!r}"
             )
-        if not settings.llm_api_key:
-            return UnconfiguredClient(
-                settings.llm_provider, settings.llm_model_strong, settings.llm_key_env_name
-            )
-        return HTTPChatClient(settings.llm_provider, settings.llm_model_strong)
-    return StubClient()
+        key = settings.key_for(provider)
+        if not key:
+            # A keyless provider in the chain is skipped, not fatal, *unless* it is
+            # the only one - then the operator gets a client that says which line to
+            # fill instead of a stack trace at boot.
+            continue
+        clients.append(HTTPChatClient(spec, model, key, referer=settings.app_base_url))
+    if not clients:
+        return UnconfiguredClient(
+            settings.llm_provider, settings.llm_model_strong, settings.llm_key_env_name
+        )
+    if len(clients) == 1:
+        return clients[0]
+    return ChainClient(clients)

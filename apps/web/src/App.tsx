@@ -64,9 +64,16 @@ export default function App() {
 
   const voiceReady = Boolean(overview.data?.voice.transport_ready);
   const voiceHint = overview.data
-    ? overview.data.voice.configured
-      ? "Speech keys are present, but the streaming turn is not wired yet (W5)."
-      : "Voice is offline: DEEPGRAM_API_KEY and AZURE_SPEECH_KEY are empty. Typing works now."
+    ? !overview.data.voice.stt_ready || !overview.data.voice.tts_ready
+      ? `Voice is offline: ${[
+          !overview.data.voice.stt_ready ? "DEEPGRAM_API_KEY" : "",
+          !overview.data.voice.tts_ready ? overview.data.voice.tts_key_env : "",
+        ]
+          .filter(Boolean)
+          .join(" and ")} ${
+          !overview.data.voice.stt_ready && !overview.data.voice.tts_ready ? "are" : "is"
+        } empty. Typing works now.`
+      : "Speech keys are present, but the streaming turn is not wired yet (W5)."
     : "Loading voice state…";
 
   /** The shell keeps one poll; panels read the same snapshot. */

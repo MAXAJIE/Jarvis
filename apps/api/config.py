@@ -12,8 +12,18 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from providers.catalog import CATALOG, ProviderSpec
+
 ENV_FILE = Path(".env")
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _catalog_names() -> set[str]:
+    return set(CATALOG)
+
+
+def _catalog_spec(name: str | None) -> ProviderSpec | None:
+    return CATALOG.get((name or "").strip().lower())
 
 
 class Settings(BaseSettings):
@@ -31,19 +41,28 @@ class Settings(BaseSettings):
     operator_totp_secret: str = ""
 
     # models
-    llm_provider: str = "stub"  # stub | openai | openrouter
+    llm_provider: str = "stub"  # stub | any name in providers/catalog.py
+    llm_fallbacks: str = ""  # comma-separated: tried in order when the first is down
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    groq_api_key: str = ""
+    gemini_api_key: str = ""
+    cerebras_api_key: str = ""
     llm_model_strong: str = "gpt-4o-mini"
     llm_model_cheap: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
 
     # speech
+    tts_provider: str = "deepgram"  # deepgram (en) | elevenlabs (multilingual) | azure
     deepgram_api_key: str = ""
     deepgram_lang_en: str = "en"
     deepgram_lang_zh: str = "zh-TW"
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice_id: str = ""  # blank: pick from /v1/voices at call time
+    elevenlabs_model: str = "eleven_turbo_v2_5"
+    deepgram_tts_model_en: str = "aura-2-thalia-en"
     azure_speech_key: str = ""
     azure_speech_region: str = "southeastasia"
     azure_voice_en: str = "en-MY-YasminNeural"
@@ -78,26 +97,70 @@ class Settings(BaseSettings):
     @property
     def llm_configured(self) -> bool:
         """A real provider *and* the key its calls need. The stub is never "configured"."""
-        return self.llm_provider in {"openai", "openrouter"} and bool(self.llm_api_key)
+        return self.llm_provider in {name for name in _catalog_names()} and bool(self.llm_api_key)
 
     @property
     def llm_api_key(self) -> str:
         """The key for whichever provider is selected, so no caller has to branch."""
-        if self.llm_provider == "openrouter":
-            return self.openrouter_api_key
-        return self.openai_api_key
+        spec = _catalog_spec(self.llm_provider)
+        if spec is None:
+            return ""
+        return str(getattr(self, spec.name + "_api_key", ""))
 
     @property
     def llm_base_url(self) -> str:
-        """OpenRouter is OpenAI-compatible, so only the base URL moves."""
-        if self.llm_provider == "openrouter":
-            return self.openrouter_base_url
-        return self.openai_base_url
+        """Explicit *_BASE_URL wins; otherwise the catalog default."""
+        spec = _catalog_spec(self.llm_provider)
+        if spec is None:
+            return self.openai_base_url
+        override = str(getattr(self, spec.name + "_base_url", "") or "")
+        return override or spec.base_url
 
     @property
     def llm_key_env_name(self) -> str:
         """Named in refusals so the operator is told which line to fill."""
-        return "OPENROUTER_API_KEY" if self.llm_provider == "openrouter" else "OPENAI_API_KEY"
+        spec = _catalog_spec(self.llm_provider)
+        return spec.key_env if spec else "OPENAI_API_KEY"
+
+    @property
+    def llm_chain(self) -> list[str]:
+        """Primary then fallbacks, order preserved, duplicates and unknowns dropped."""
+        chain: list[str] = []
+        for name in [self.llm_provider, *self.llm_fallbacks.split(",")]:
+            cleaned = name.strip().lower()
+            if cleaned in {"stub", ""} or cleaned in chain:
+                continue
+            if _catalog_spec(cleaned) is not None:
+                chain.append(cleaned)
+        return chain
+
+    def key_for(self, provider: str) -> str:
+        spec = _catalog_spec(provider)
+        return "" if spec is None else str(getattr(self, spec.name + "_api_key", ""))
+
+    def model_for(self, provider: str) -> str:
+        """The primary honours LLM_MODEL_STRONG; fallbacks use their catalog default."""
+        if provider == self.llm_provider:
+            return self.llm_model_strong
+        spec = _catalog_spec(provider)
+        return spec.default_model if spec else ""
+
+    @property
+    def tts_configured(self) -> bool:
+        if self.tts_provider == "elevenlabs":
+            return bool(self.elevenlabs_api_key)
+        if self.tts_provider == "deepgram":
+            # One key, ears and mouth: no second signup for English speech.
+            return bool(self.deepgram_api_key)
+        return bool(self.azure_speech_key)
+
+    @property
+    def tts_key_env_name(self) -> str:
+        if self.tts_provider == "elevenlabs":
+            return "ELEVENLABS_API_KEY"
+        if self.tts_provider == "deepgram":
+            return "DEEPGRAM_API_KEY"
+        return "AZURE_SPEECH_KEY"
 
 
 _cached: Settings | None = None

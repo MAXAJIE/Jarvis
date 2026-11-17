@@ -98,14 +98,22 @@ export function SystemView({ overview }: { overview: Overview }) {
           </div>
           <div>
             <div className="text-[0.68rem] tracking-[0.14em] text-[var(--color-mute)]">VOICE TTS</div>
-            <div>{overview.voice.tts || "not configured"}</div>
+            <div>
+              {overview.voice.tts_ready
+                ? `${overview.voice.tts} · ${overview.voice.tts_voice}${
+                    overview.voice.free_chars_per_month
+                      ? ` · ${overview.voice.free_chars_per_month} free chars/mo`
+                      : ""
+                  }`
+                : `not configured (${overview.voice.tts_key_env} is empty)`}
+            </div>
           </div>
         </div>
         {!llm.configured ? (
           <p className="px-3 pb-3 text-[0.62rem] leading-relaxed text-amber-200/80">
             Stub mode: routing, policy, approvals, ledger and audit are real; the prose is
-            templated. Set <code>OPENAI_API_KEY</code> and <code>LLM_PROVIDER=openai</code> for a real
-            model.
+            templated. Set <code>OPENROUTER_API_KEY</code> (or another provider key from{" "}
+            <code>providers/catalog.py</code>) to get a real one.
           </p>
         ) : null}
         <p className="px-3 pb-3 text-[0.66rem] text-[var(--color-mute)]">

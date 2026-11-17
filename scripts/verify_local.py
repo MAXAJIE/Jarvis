@@ -116,8 +116,17 @@ async def main() -> int:
             print("      nothing below this line was verified: no model, no turn")
             return 1
         tools = [e for e in turn["events"] if e["type"] == "tool"]  # type: ignore[union-attr]
-        ok = len(tools) == 5 and all(e["ok"] for e in tools)
-        print(f"{'PASS' if ok else 'FAIL'} ws turn 'plan my week': {len(tools)} tool events")
+        # Two things must hold with any planner: the loop dispatched real tools,
+        # and the turn came back with words. What must NOT be asserted is the tool
+        # count or every tool succeeding: "plan my week" legitimately reaches for
+        # the calendar, which is entitled to refuse when GOOGLE_* is empty. That
+        # refusal is correct behaviour, and the approval checks below cover tool
+        # execution deterministically.
+        answer = str(turn.get("answer") or "")
+        ok = bool(tools) and bool(answer.strip())
+        summary = ", ".join(f"{e.get('name')}{'=' if e.get('ok') else '!'}" for e in tools)
+        label = "PASS" if ok else "FAIL"
+        print(f"{label} ws turn 'plan my week': {len(tools)} tool event(s) [{summary}]")
         failures += 0 if ok else 1
 
         created = await client.post("/api/tasks", json={"title": "verify: delete me"})

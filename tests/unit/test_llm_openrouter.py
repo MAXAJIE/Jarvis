@@ -76,7 +76,7 @@ def test_a_bare_model_name_is_refused_before_it_404s_mid_turn(
     # OpenRouter addresses models as vendor/model. Failing here is a startup
     # error; failing at request time would be a half-executed turn.
     _use(monkeypatch, "openrouter", "sk-or-v1-test", "gpt-4o-mini")
-    with pytest.raises(RuntimeError, match="OpenRouter slug"):
+    with pytest.raises(RuntimeError, match="vendor-prefixed model"):
         get_client()
 
 

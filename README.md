@@ -49,11 +49,30 @@ LLM_MODEL_STRONG=openai/gpt-4o-mini   # vendor/model slug, required
 LLM_MODEL_CHEAP=openai/gpt-4o-mini
 ```
 
-OpenRouter is OpenAI-compatible, so the same client serves both; the request asks
-for `usage.include` and the provider's reported cost is what lands in
-`cost_ledger` (marked `price_source: provider`). With the provider selected but
-the key empty, the app still boots, `/api/health` turns 503 and names the exact
-variable, and any turn refuses instead of silently using the stub.
+OpenRouter is OpenAI-compatible, so the same client serves every provider in
+`providers/catalog.py` (`openai`, `openrouter`, `groq`, `gemini`, `cerebras`).
+The request asks for `usage.include`, and the provider's reported cost is what
+lands in `cost_ledger` (`price_source: provider`); a bad key boots into a client
+that refuses and names the variable instead of killing the process.
+
+**Fallbacks.** `LLM_FALLBACKS=groq,gemini` is tried in order when the primary
+rate-limits (429), is out of credit (402) or fails upstream (5xx). A 400/401 is
+never retried elsewhere — it would fail the same way everywhere. Each failed
+attempt lands in `cost_ledger` at $0 with `meta.failed`, so a silently degrading
+chain is visible.
+
+**Voice.** `TTS_PROVIDER=deepgram` (default) uses `DEEPGRAM_API_KEY` for both
+speech-to-text and speech, Aura voices, English only. `TTS_PROVIDER=elevenlabs`
+with `ELEVENLABS_API_KEY` adds multilingual voices for Chinese (free tier: 10k
+characters/month). Check it for real:
+
+```bash
+python -m scripts.check_voice "Jarvis online."      # writes var/voice-sample.mp3
+python -m scripts.check_voice "我而家可以講嘢。"     # refuses until ElevenLabs is set
+```
+
+The streaming voice turn (microphone in, barge-in) is W5 and not built:
+`/api/system/overview` reports `voice.transport_ready: false`.
 `,
 ## Gates
 

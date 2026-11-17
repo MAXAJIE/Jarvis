@@ -64,7 +64,7 @@ async def health(response: Response) -> dict[str, Any]:
     for name, configured, hint in (
         ("twilio", bool(settings.twilio_account_sid and settings.twilio_auth_token), "TWILIO_*"),
         ("deepgram", bool(settings.deepgram_api_key), "DEEPGRAM_API_KEY"),
-        ("azure_speech", bool(settings.azure_speech_key), "AZURE_SPEECH_KEY"),
+        ("tts", settings.tts_configured, settings.tts_key_env_name),
         ("telegram", bool(settings.telegram_bot_token), "TELEGRAM_BOT_TOKEN"),
         ("google", bool(settings.google_client_id and settings.google_refresh_token), "GOOGLE_*"),
         ("sandbox", bool(settings.sandbox_image), "SANDBOX_IMAGE"),
