@@ -163,3 +163,21 @@ async def test_a_response_without_a_cost_leaves_it_unset_rather_than_inventing_o
     reply = await get_client().chat([ChatMessage(role="user", content="hi")], [], deadline_ms=5000)
     assert reply.cost_usd is None
     assert reply == LLMReply(content="ok", tokens_in=10, tokens_out=5, cost_usd=None)
+
+
+def test_the_stub_reads_a_delete_phrase_however_it_is_worded() -> None:
+    """A fresh install with no keys runs the stub, and verify_local's approval step
+    is what proves the gate works. "delete the task with id X" once fell through the
+    stub's narrower "delete task" match, so it created five tasks and the approval
+    gate looked broken on a clean clone."""
+    from providers.llm import _plan
+
+    todo = "73742a12-d46f-4589-b313-4436cd2339ae"
+    for text in (
+        f"delete task {todo}",
+        f"delete the task with id {todo}",
+        f"please delete my task, id {todo}",
+    ):
+        calls = _plan(text)
+        assert [call.name for call in calls] == ["task_delete"], text
+        assert calls[0].args["task_id"] == todo

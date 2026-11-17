@@ -195,7 +195,10 @@ def _plan(text: str, message_id: str = "") -> list[ToolCall]:
         )
         return plan
 
-    if "delete task" in lowered or "刪除" in text:
+    # "delete the task with id <uuid>" is how the verifier phrases it for small
+    # models, and a plain "delete task" match missed it: the stub then created tasks
+    # instead of deleting one, and the approval gate looked broken on a fresh install.
+    if ("delete" in lowered and "task" in lowered) or "刪除" in text:
         match = re.search(r"([0-9a-f]{8}-[0-9a-f-]{27})", text)
         if match:
             return [ToolCall(name="task_delete", args={"task_id": match.group(1)})]
