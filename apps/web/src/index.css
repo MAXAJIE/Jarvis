@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0b1220;
+  --color-panel: #121a2b;
+  --color-line: #1f2b45;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.card {
+  border: 1px solid var(--color-line);
+  background: var(--color-panel);
+  border-radius: 0.75rem;
+}
+
+.btn {
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.875rem;
+  border: 1px solid var(--color-line);
+  transition: background 120ms ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: #1b2740;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.btn-danger {
+  background: #7f1d1d;
+  border-color: #991b1b;
+  color: #fee2e2;
+}
+
+.field {
+  border: 1px solid var(--color-line);
+  background: #0e1626;
+  border-radius: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  width: 100%;
+  color: inherit;
+}
+
+.field:focus {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
