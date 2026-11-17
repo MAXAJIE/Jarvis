@@ -45,13 +45,19 @@ async def health(response: Response) -> dict[str, Any]:
     db_ok = await _db_ok()
     components[-1] = _component("db", db_ok, "reachable" if db_ok else "unreachable")
 
-    llm_ok = settings.llm_provider == "openai" and bool(settings.openai_api_key)
+    llm_ok = settings.llm_configured
     components.append(
         _component(
             "llm",
             llm_ok,
             f"provider={settings.llm_provider}"
-            + ("" if llm_ok else " (stub: no real model, no real answers)"),
+            if llm_ok
+            else f"provider={settings.llm_provider}"
+            + (
+                f" ({settings.llm_key_env_name} is empty)"
+                if settings.llm_provider != "stub"
+                else " (stub: no real model, no real answers)"
+            ),
         )
     )
 

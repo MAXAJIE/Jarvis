@@ -155,6 +155,7 @@ def build_graph(deps: GraphDeps, checkpointer: Any) -> Any:
             tokens_out=reply.tokens_out,
             conversation_id=ctx.conversation_id,
             price_per_mtok=PRICES_PER_MTOK.get(deps.client.model),
+            reported_usd=reply.cost_usd,
         )
         transcript = list(state["messages"])
         if reply.content:

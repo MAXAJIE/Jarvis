@@ -285,8 +285,9 @@ async def overview(user_id: str = Depends(require_session)) -> dict[str, Any]:
         "tools_by_risk": by_risk,
         "llm": {
             "provider": settings.llm_provider,
-            "configured": settings.llm_provider == "openai" and bool(settings.openai_api_key),
-            "model": settings.llm_model_strong if settings.openai_api_key else "stub",
+            "configured": settings.llm_configured,
+            "model": settings.llm_model_strong if settings.llm_configured else "stub",
+            "key_env": settings.llm_key_env_name,
         },
         "voice": {
             "configured": bool(settings.deepgram_api_key and settings.azure_speech_key),

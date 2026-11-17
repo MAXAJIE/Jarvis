@@ -231,9 +231,10 @@ def default_context(
 def settings_guard() -> None:
     """P6: a production process may not run on the stub provider."""
     settings = get_settings()
-    if settings.is_prod and settings.llm_provider != "openai":
+    if settings.is_prod and settings.llm_provider not in {"openai", "openrouter"}:
         raise SystemExit(
-            "refusing to start: APP_ENV=prod requires LLM_PROVIDER=openai and a real key"
+            "refusing to start: APP_ENV=prod requires LLM_PROVIDER=openai or openrouter "
+            "and a real key"
         )
-    if settings.is_prod and not settings.openai_api_key:
-        raise SystemExit("refusing to start: OPENAI_API_KEY is empty")
+    if settings.is_prod and not settings.llm_api_key:
+        raise SystemExit(f"refusing to start: {settings.llm_key_env_name} is empty")

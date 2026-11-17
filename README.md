@@ -38,9 +38,23 @@ cd apps/web && npm install && npm run dev    # http://127.0.0.1:5173
 
 Without an LLM key the app runs on the **stub provider**: it plans real tool
 calls (so approvals, taint, budget and audit all behave), but its prose is
-templated. Set `LLM_PROVIDER=openai` and `OPENAI_API_KEY` to get real answers;
-`APP_ENV=prod` with the stub refuses to start.
+templated. `APP_ENV=prod` with the stub refuses to start.
 
+**OpenRouter** (one key, many vendors' models): in `.env`
+
+```
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-v1-...
+LLM_MODEL_STRONG=openai/gpt-4o-mini   # vendor/model slug, required
+LLM_MODEL_CHEAP=openai/gpt-4o-mini
+```
+
+OpenRouter is OpenAI-compatible, so the same client serves both; the request asks
+for `usage.include` and the provider's reported cost is what lands in
+`cost_ledger` (marked `price_source: provider`). With the provider selected but
+the key empty, the app still boots, `/api/health` turns 503 and names the exact
+variable, and any turn refuses instead of silently using the stub.
+`,
 ## Gates
 
 ```bash

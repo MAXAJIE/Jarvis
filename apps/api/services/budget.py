@@ -91,27 +91,42 @@ async def record_llm_cost(
     tokens_out: int,
     conversation_id: str | None,
     price_per_mtok: tuple[float, float] | None,
+    reported_usd: float | None = None,
 ) -> Decimal:
     """One row per model call, including a zero-cost stub call (P4).
 
     A row at 0 USD is not padding: it is what makes "every LLM call has a cost
     row" checkable in the stub profile instead of vacuously true.
+
+    When the provider states the price of the request, that number wins: the
+    local table is a guess about a price that changes without telling us.
     """
-    if price_per_mtok is None:
+    if reported_usd is not None:
+        usd = Decimal(str(reported_usd))
         price_in = price_out = Decimal(0)
-        meta: dict[str, Any] = {"unverified_price": True}
+        meta: dict[str, Any] = {"price_source": "provider"}
+    elif price_per_mtok is None:
+        usd = Decimal(0)
+        price_in = price_out = Decimal(0)
+        meta = {"unverified_price": True}
     else:
         price_in = Decimal(str(price_per_mtok[0]))
         price_out = Decimal(str(price_per_mtok[1]))
-        meta = {}
-    usd = (Decimal(tokens_in) * price_in + Decimal(tokens_out) * price_out) / Decimal(1_000_000)
+        usd = (Decimal(tokens_in) * price_in + Decimal(tokens_out) * price_out) / Decimal(1_000_000)
+        meta = {"price_source": "table"}
+    units = tokens_in + tokens_out
+    unit_price = (
+        usd / Decimal(units)
+        if reported_usd is not None and units
+        else price_in / Decimal(1_000_000)
+    )
     await record_cost(
         kind="llm",
         provider=provider,
         model=model,
-        units=Decimal(tokens_in + tokens_out),
+        units=Decimal(units),
         unit_name="tokens",
-        unit_price_usd=price_in / Decimal(1_000_000),
+        unit_price_usd=unit_price,
         usd=usd.quantize(Decimal("0.000001")),
         conversation_id=conversation_id,
         meta=meta,

@@ -5,7 +5,8 @@ deterministic tool calls so the whole loop (filtering, approvals, taint, budget,
 audit) is exercisable with no key and no spend. It only ever sees the tool list
 it is handed, so a tool removed by ``agent.policy`` is genuinely invisible to it.
 
-``OpenAIClient`` speaks the chat-completions tool-calling protocol.
+``HTTPChatClient`` speaks the chat-completions tool-calling protocol, which
+OpenAI and OpenRouter share.
 """
 
 from __future__ import annotations
@@ -23,11 +24,15 @@ from apps.api.config import get_settings
 
 Role = Literal["system", "user", "assistant", "tool"]
 
-# VERIFY: read these again at openai.com/api/pricing before trusting a
-# projection. USD per 1M tokens. Not verified by this build.
+# VERIFY: read these again at openai.com/api/pricing (and the model page on
+# openrouter.ai) before trusting a projection. USD per 1M tokens (in, out).
+# OpenRouter slugs are priced per model and change; when the response carries a
+# ``usage.cost`` this table is not consulted at all.
 PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4.1-mini": (0.40, 1.60),
+    "openai/gpt-4o-mini": (0.15, 0.60),
+    "openai/gpt-4.1-mini": (0.40, 1.60),
 }
 
 
@@ -53,6 +58,9 @@ class LLMReply(BaseModel):
     tool_calls: list[ToolCall] = []
     tokens_in: int = 0
     tokens_out: int = 0
+    # Provider-reported spend, when the provider reports one (OpenRouter does).
+    # Preferred over the price table: the table is a guess about a moving price.
+    cost_usd: float | None = None
 
 
 class LLMClient(Protocol):
@@ -237,7 +245,8 @@ def _describe(name: str, payloads: list[dict[str, Any]], zh: bool) -> str:
         return f"Created {count} task{'s' if count != 1 else ''}: {shown}."
     if name == "task_list":
         first = payloads[0] if payloads else {}
-        tasks = first.get("tasks") if isinstance(first.get("tasks"), list) else []
+        raw_tasks = first.get("tasks")
+        tasks: list[Any] = raw_tasks if isinstance(raw_tasks, list) else []
         names = [str(t.get("title", "")) for t in tasks if isinstance(t, dict)]
         joiner = "、" if zh else ", "
         if not names:
@@ -260,7 +269,8 @@ def _describe(name: str, payloads: list[dict[str, Any]], zh: bool) -> str:
         return f"搵到 {total} 項。" if zh else f"Found {total} item(s)."
     if name == "mail_search":
         first = payloads[0] if payloads else {}
-        msgs = first.get("messages") if isinstance(first.get("messages"), list) else []
+        raw_msgs = first.get("messages")
+        msgs: list[Any] = raw_msgs if isinstance(raw_msgs, list) else []
         return f"有 {len(msgs)} 封相關郵件。" if zh else f"{len(msgs)} matching message(s)."
     if name == "web_fetch":
         first = payloads[0] if payloads else {}
@@ -365,11 +375,57 @@ class StubClient:
         return LLMReply(content=_summarise(user_text, messages, zh))
 
 
-class OpenAIClient:
-    provider = "openai"
+class LLMNotConfigured(RuntimeError):
+    """The selected provider has no key.
 
-    def __init__(self, model: str) -> None:
+    Loud, and incapable of answering: a missing key must never fall back to the
+    stub, because templated prose would look exactly like a real answer.
+    """
+
+
+class UnconfiguredClient:
+    """Selected provider, no key. Boots so the UI can name the missing line,
+    refuses every call so nothing is ever answered by the wrong engine."""
+
+    def __init__(self, provider: str, model: str, key_env: str) -> None:
+        self.provider = provider
         self.model = model
+        self.key_env = key_env
+
+    async def chat(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec],
+        *,
+        deadline_ms: int,
+    ) -> LLMReply:
+        raise LLMNotConfigured(
+            f"{self.key_env} is empty: put it in .env to use {self.provider}, "
+            "or set LLM_PROVIDER=stub for offline answers"
+        )
+
+
+class HTTPChatClient:
+    """OpenAI-compatible chat completions. Serves both openai and openrouter.
+
+    The two differ in base URL, key, and one extra header; everything else is the
+    same wire format, so branching on provider inside a second client class would
+    be duplication that drifts.
+    """
+
+    def __init__(self, provider: str, model: str) -> None:
+        self.provider = provider
+        self.model = model
+
+    def _headers(self) -> dict[str, str]:
+        settings = get_settings()
+        headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
+        if self.provider == "openrouter":
+            # OpenRouter's attribution headers; without them requests still work,
+            # they just show up unattributed in the operator's activity log.
+            headers["HTTP-Referer"] = settings.app_base_url
+            headers["X-Title"] = "Jarvis"
+        return headers
 
     async def chat(
         self,
@@ -399,12 +455,15 @@ class OpenAIClient:
                 }
                 for tool in tools
             ]
+        if self.provider == "openrouter":
+            # Ask for the authoritative per-request cost instead of inferring it.
+            payload["usage"] = {"include": True}
         timeout = max(1.0, deadline_ms / 1000.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
-                f"{settings.openai_base_url.rstrip('/')}/chat/completions",
+                f"{settings.llm_base_url.rstrip('/')}/chat/completions",
                 json=payload,
-                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                headers=self._headers(),
             )
         if response.status_code != 200:
             raise RuntimeError(f"llm http {response.status_code}")
@@ -420,19 +479,36 @@ class OpenAIClient:
                 parsed_args = {}
             calls.append(ToolCall(name=str(function.get("name")), args=parsed_args))
         usage = body.get("usage") or {}
+        reported = usage.get("cost")
         return LLMReply(
             content=str(message.get("content") or ""),
             tool_calls=calls,
             tokens_in=int(usage.get("prompt_tokens") or 0),
             tokens_out=int(usage.get("completion_tokens") or 0),
+            cost_usd=float(reported) if isinstance(reported, int | float) else None,
         )
 
 
 def get_client() -> LLMClient:
-    """Fail closed: a prod process with the stub provider refuses to start elsewhere."""
+    """Build the selected client. A missing key yields a refusing client, not the stub.
+
+    Prod never reaches this point without a key: ``settings_guard`` exits first.
+    Dev boots with a refusing client so ``/api/health`` and the chat can both name
+    the exact variable to fill.
+    """
     settings = get_settings()
-    if settings.llm_provider == "openai":
-        if not settings.openai_api_key:
-            raise RuntimeError("LLM_PROVIDER=openai but OPENAI_API_KEY is empty")
-        return OpenAIClient(settings.llm_model_strong)
+    if settings.llm_provider in {"openai", "openrouter"}:
+        if settings.llm_provider == "openrouter" and "/" not in settings.llm_model_strong:
+            # OpenRouter addresses models as vendor/model. A bare "gpt-4o-mini"
+            # 404s at request time, halfway through a turn, which is a far worse
+            # failure than refusing to build the client.
+            raise RuntimeError(
+                "LLM_PROVIDER=openrouter needs an OpenRouter slug such as "
+                f"'openai/gpt-4o-mini' in LLM_MODEL_STRONG, got {settings.llm_model_strong!r}"
+            )
+        if not settings.llm_api_key:
+            return UnconfiguredClient(
+                settings.llm_provider, settings.llm_model_strong, settings.llm_key_env_name
+            )
+        return HTTPChatClient(settings.llm_provider, settings.llm_model_strong)
     return StubClient()

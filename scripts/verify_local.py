@@ -74,6 +74,10 @@ async def login(client: httpx.AsyncClient) -> bool:
     return ok
 
 
+class TurnError(RuntimeError):
+    """The server answered the turn with an error frame instead of a result."""
+
+
 async def ws_turn(text: str, cookie: str, lang: str | None = None) -> dict[str, object]:
     from websockets.asyncio.client import connect
 
@@ -89,6 +93,8 @@ async def ws_turn(text: str, cookie: str, lang: str | None = None) -> dict[str, 
             assert json.loads(await socket.recv())["type"] == "lang"
         await socket.send(json.dumps({"type": "user_message", "text": text}))
         frame: dict[str, object] = json.loads(await socket.recv())
+        if frame.get("type") == "error":
+            raise TurnError(str(frame.get("message")))
         return frame
 
 
@@ -101,7 +107,14 @@ async def main() -> int:
             return 1
 
         cookie = f"jarvis_session={client.cookies.get('jarvis_session')}"
-        turn = await ws_turn("plan my week", cookie)
+        try:
+            turn = await ws_turn("plan my week", cookie)
+        except TurnError as exc:
+            # Every check below needs a working model. Saying so beats five
+            # misleading FAILs caused by one missing key.
+            print(f"FAIL model call: {exc}")
+            print("      nothing below this line was verified: no model, no turn")
+            return 1
         tools = [e for e in turn["events"] if e["type"] == "tool"]  # type: ignore[union-attr]
         ok = len(tools) == 5 and all(e["ok"] for e in tools)
         print(f"{'PASS' if ok else 'FAIL'} ws turn 'plan my week': {len(tools)} tool events")

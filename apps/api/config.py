@@ -31,9 +31,11 @@ class Settings(BaseSettings):
     operator_totp_secret: str = ""
 
     # models
+    llm_provider: str = "stub"  # stub | openai | openrouter
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
-    llm_provider: str = "stub"  # stub | openai
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
     llm_model_strong: str = "gpt-4o-mini"
     llm_model_cheap: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
@@ -75,7 +77,27 @@ class Settings(BaseSettings):
 
     @property
     def llm_configured(self) -> bool:
-        return self.llm_provider == "openai" and bool(self.openai_api_key)
+        """A real provider *and* the key its calls need. The stub is never "configured"."""
+        return self.llm_provider in {"openai", "openrouter"} and bool(self.llm_api_key)
+
+    @property
+    def llm_api_key(self) -> str:
+        """The key for whichever provider is selected, so no caller has to branch."""
+        if self.llm_provider == "openrouter":
+            return self.openrouter_api_key
+        return self.openai_api_key
+
+    @property
+    def llm_base_url(self) -> str:
+        """OpenRouter is OpenAI-compatible, so only the base URL moves."""
+        if self.llm_provider == "openrouter":
+            return self.openrouter_base_url
+        return self.openai_base_url
+
+    @property
+    def llm_key_env_name(self) -> str:
+        """Named in refusals so the operator is told which line to fill."""
+        return "OPENROUTER_API_KEY" if self.llm_provider == "openrouter" else "OPENAI_API_KEY"
 
 
 _cached: Settings | None = None

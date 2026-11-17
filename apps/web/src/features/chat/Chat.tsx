@@ -75,6 +75,9 @@ export default function Chat({
           return;
         }
         if (frame.type === "error") {
+          // A failed turn must release the composer: a provider error that leaves
+          // the UI stuck on "thinking…" is indistinguishable from a hang.
+          setBusy(false);
           setBubbles((current) => [...current, { id: nextId++, role: "system", text: frame.message }]);
           return;
         }

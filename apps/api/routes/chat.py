@@ -3,6 +3,7 @@ the JSON protocol, and hands the agent a transport-neutral ToolContext."""
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
@@ -17,11 +18,36 @@ from apps.api.db.session import session_scope
 from packages.contracts.tool import Lang, ToolContext, Transport
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _runtime(ws: WebSocket) -> Runtime:
     runtime: Runtime = ws.app.state.runtime
     return runtime
+
+
+async def _turn_or_error(ws: WebSocket, ctx: ToolContext, text: str) -> Any:
+    """Run one turn; report a failed turn instead of dropping the socket.
+
+    Provider faults are ordinary here: a rate limit, an exhausted OpenRouter
+    balance, a rejected key. Closing the socket leaves the operator staring at a
+    message that never answers; a typed error frame tells them what happened and
+    keeps the conversation usable.
+    """
+    try:
+        return await _runtime(ws).turn(ctx, text)
+    except WebSocketDisconnect:
+        raise
+    except Exception as exc:  # the transport reports, the agent decides
+        logger.exception("turn failed")
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": str(exc) or exc.__class__.__name__,
+                "detail": exc.__class__.__name__,
+            }
+        )
+        return None
 
 
 async def _open_conversation(
@@ -156,7 +182,9 @@ async def chat_socket(ws: WebSocket) -> None:
                 await ws.send_json({"type": "error", "message": "empty message"})
                 continue
 
-            result = await _runtime(ws).turn(await context(), text)
+            result = await _turn_or_error(ws, await context(), text)
+            if result is None:
+                continue
             await ws.send_json(
                 {
                     "type": "turn",
