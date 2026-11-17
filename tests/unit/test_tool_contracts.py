@@ -7,27 +7,71 @@ dispatchable.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
+from pydantic import BaseModel
 
 from agent.policy import validate_tool
 from packages.contracts.errors import ToolError
 from packages.contracts.tool import RiskLevel, ToolContext
+from tools.base import FunctionTool
 from tools.registry import build_registry
-from tools.sandbox import BINARY_ALLOWLIST, ShellIn
+from tools.sandbox import BINARY_ALLOWLIST, ShellIn, ShellOut
 from tools.telegram import TelegramSendIn
 from tools.web import WebFetchIn
 
 TYPED_KEYS = ("type", "$ref", "anyOf", "allOf", "const", "enum")
 
 
+def mk_tool(
+    name: str,
+    risk: RiskLevel,
+    *,
+    approval: Callable[[BaseModel, ToolContext], bool] | None = None,
+) -> FunctionTool:
+    """A policy-only tool: same contract, no implementation to run."""
+    return FunctionTool(
+        name=name,
+        description=name,
+        input_model=ShellIn,
+        output_model=ShellOut,
+        risk=risk,
+        idempotent=False,
+        timeout_s=1.0,
+        handler=_noop,
+        approval=approval,
+    )
+
+
+async def _noop(args: object, ctx: ToolContext) -> object:  # pragma: no cover
+    raise NotImplementedError
+
+
 def ctx() -> ToolContext:
     return ToolContext(user_id="u", conversation_id="c", thread_id="t")
 
 
-def test_inventory_is_the_28_approved_tools() -> None:
+def test_inventory_is_the_22_tools_this_build_can_actually_run() -> None:
+    """The inventory must describe reality: 28 were approved, 6 cannot run here.
+
+    A tool that only ever raises NotConfigured is worse than a missing tool - the
+    planner offers it, the operator is told it failed, and nothing says the feature
+    was never built.
+    """
     registry = build_registry()
-    assert len(registry.names()) == 28
+    assert len(registry.names()) == 22
     assert registry.names() == sorted(registry.names())
+    assert set(registry.withheld) == {
+        "shell",
+        "python_run",
+        "browser_open",
+        "browser_click",
+        "browser_extract",
+        "call_place",
+    }
+    # Withheld means gone, not merely unadvertised.
+    assert not set(registry.withheld) & set(registry.names())
 
 
 def test_every_tool_declares_two_typed_pydantic_models() -> None:
@@ -73,7 +117,12 @@ def test_telegram_asks_for_every_chat_when_the_allowlist_is_unset(
 
 
 def test_shell_approval_follows_the_binary_allowlist() -> None:
-    tool = build_registry().get("shell")
+    # shell is withheld from the live registry (no sandbox runner), so this builds a
+    # tool around the *real* approval rule: the allowlist policy still has to be
+    # correct for the day the runner exists.
+    from tools.sandbox import _shell_needs_approval
+
+    tool = mk_tool("shell", RiskLevel.WRITE, approval=_shell_needs_approval)
     for binary in sorted(BINARY_ALLOWLIST):
         assert tool.requires_approval(ShellIn(command=f"{binary} --help"), ctx()) is False
     assert tool.requires_approval(ShellIn(command="rm -rf /"), ctx()) is True

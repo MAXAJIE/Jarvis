@@ -86,6 +86,8 @@ export interface Overview {
   specialists: SpecialistRow[];
   tools: ToolRow[];
   tools_by_risk: Record<string, number>;
+  /** Named in this build's design but not implemented: shown, never offered. */
+  withheld_tools: { name: string; reason: string }[];
   llm: { provider: string; configured: boolean; model: string };
   voice: {
     stt: string;

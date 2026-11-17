@@ -19,6 +19,19 @@ from tools import calendar, delegate, fs, mail, memory, phone, rag, sandbox, tas
 
 SNAKE = re.compile(r"^[a-z][a-z0-9_]*$")
 
+# Tools the design names but this build does not implement. They are kept out of
+# the registry entirely, so no planner is ever shown a capability that can only
+# fail. A tool that raises NotConfigured every time is a lie told to the model, and
+# the model then apologises to the operator for a feature that was never built.
+WITHHELD: dict[str, str] = {
+    "shell": "sandbox runner not implemented (needs Docker, absent here)",
+    "python_run": "sandbox runner not implemented (needs Docker, absent here)",
+    "browser_open": "sandbox runner not implemented (needs Docker, absent here)",
+    "browser_click": "sandbox runner not implemented (needs Docker, absent here)",
+    "browser_extract": "sandbox runner not implemented (needs Docker, absent here)",
+    "call_place": "no TwiML / media-stream handler: a call would connect to silence",
+}
+
 SPECIALIST_TOOLS: dict[str, frozenset[str]] = {
     "supervisor": frozenset(
         {
@@ -69,7 +82,8 @@ SPECIALIST_TOOLS: dict[str, frozenset[str]] = {
 
 
 class Registry:
-    def __init__(self, tools: Sequence[Tool]) -> None:
+    def __init__(self, tools: Sequence[Tool], withheld: dict[str, str] | None = None) -> None:
+        self.withheld: dict[str, str] = dict(withheld or {})
         self._by_name: dict[str, Tool] = {}
         for tool in tools:
             if not SNAKE.match(tool.name):
@@ -82,7 +96,9 @@ class Registry:
     def _validate_allowlists(self) -> None:
         assigned: set[str] = set()
         for specialist, names in SPECIALIST_TOOLS.items():
-            missing = names - set(self._by_name)
+            # A name may be allowlisted yet absent only when it is declared withheld;
+            # a typo still fails loudly.
+            missing = names - set(self._by_name) - set(self.withheld)
             if missing:
                 raise PolicyViolation(f"{specialist} lists unknown tools: {sorted(missing)}")
             assigned |= names
@@ -106,13 +122,19 @@ class Registry:
         names = SPECIALIST_TOOLS.get(specialist)
         if names is None:
             raise PolicyViolation(f"unknown specialist {specialist!r}")
-        return [self._by_name[name] for name in sorted(names)]
+        return [self._by_name[name] for name in sorted(names & set(self._by_name))]
 
     def by_risk(self, risk: RiskLevel) -> list[Tool]:
         return [t for t in self.all() if t.risk is risk]
 
 
 def build_registry() -> Registry:
+    """Every tool the code implements, minus the ones this build cannot run.
+
+    Filtering here rather than inside each module keeps one list of what is withheld
+    and why, which the System panel shows instead of silently pretending the tools
+    exist.
+    """
     tools: list[Tool] = []
     for module in (
         tasks,
@@ -128,4 +150,5 @@ def build_registry() -> Registry:
         calendar,
     ):
         tools.extend(module.build())
-    return Registry(tools)
+    registered = [tool for tool in tools if tool.name not in WITHHELD]
+    return Registry(registered, WITHHELD)

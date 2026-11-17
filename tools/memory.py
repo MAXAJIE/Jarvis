@@ -12,7 +12,7 @@ actually exists, ``memory_search`` hides unconfirmed facts unless asked, and
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from apps.api.db.models import MemoryFact, Message
 from apps.api.db.session import session_scope
@@ -53,6 +53,9 @@ class FactSearchOut(BaseModel):
     facts: list[FactOut]
     mode: str = "keyword"
     note: str = "tier-3 vector search requires PostgreSQL + pgvector"
+    # Unconfirmed facts are hidden (T8), but saying "nothing" while a fact waits for
+    # the operator is a false statement, so the count is reported instead.
+    pending: int = 0
 
 
 class FactConfirmIn(BaseModel):
@@ -109,7 +112,36 @@ async def _search(a: FactSearchIn, ctx: ToolContext) -> FactSearchOut:
             stmt = stmt.where(MemoryFact.confirmed.is_(True))
         stmt = stmt.order_by(MemoryFact.confidence.desc()).limit(a.limit)
         rows = (await session.execute(stmt)).scalars().all()
-        return FactSearchOut(facts=[_out(r) for r in rows])
+        mode = "keyword"
+        note = "tier-3 vector search requires PostgreSQL + pgvector"
+        if not rows:
+            # "what do you know about me" carries no keyword, so a pure match returns
+            # nothing and the agent says it remembers nothing while holding facts.
+            # Fall back to the newest confirmed facts, labelled as such - an empty
+            # answer and a labelled recency answer are different claims.
+            recent = (
+                select(MemoryFact)
+                .where(MemoryFact.user_id == ctx.user_id)
+                .order_by(MemoryFact.created_at.desc())
+                .limit(a.limit)
+            )
+            if not a.include_unconfirmed:
+                recent = recent.where(MemoryFact.confirmed.is_(True))
+            rows = (await session.execute(recent)).scalars().all()
+            if rows:
+                mode = "recent"
+                note = "no keyword match; showing the newest stored facts"
+        pending = 0
+        if not a.include_unconfirmed:
+            waiting = (
+                select(func.count())
+                .select_from(MemoryFact)
+                .where(MemoryFact.user_id == ctx.user_id, MemoryFact.confirmed.is_(False))
+            )
+            pending = int((await session.execute(waiting)).scalar_one())
+            if pending:
+                note += f"; {pending} fact(s) awaiting your confirmation"
+        return FactSearchOut(facts=[_out(r) for r in rows], mode=mode, note=note, pending=pending)
 
 
 async def _confirm(a: FactConfirmIn, ctx: ToolContext) -> FactConfirmOut:

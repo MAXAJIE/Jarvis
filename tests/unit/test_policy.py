@@ -193,7 +193,6 @@ def test_real_registry_hides_every_external_and_irreversible_when_tainted() -> N
     blocked = {t.name for t in registry.all()} - {t.name for t in tainted}
     expected = {
         "mail_send",
-        "call_place",
         "telegram_send",
         "task_delete",
         "fs_delete",
@@ -218,6 +217,5 @@ def test_real_registry_tainting_tools_are_exactly_the_documented_five() -> None:
         "web_fetch",
         "mail_read",
         "mail_search",
-        "browser_extract",
         "rag_search",
     }

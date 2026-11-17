@@ -6,15 +6,18 @@ because the stub is itself a real LLMClient (and the offline provider).
 
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy import func, select
 
 from agent.runtime import Runtime, default_context
 from apps.api.db import session as db_session
-from apps.api.db.models import CostLedgerRow, PhoneLine, Task, ToolRun
+from apps.api.db.models import CostLedgerRow, Task, ToolRun
 from apps.api.services import audit
 from providers.llm import LLMReply, ToolCall
 
@@ -25,17 +28,22 @@ class ScriptedClient:
     provider = "scripted"
     model = "scripted"
 
-    def __init__(self, script: list[ToolCall | str]) -> None:
+    def __init__(self, script: list[ToolCall | str | Callable[[Any], ToolCall]]) -> None:
         self.script = list(script)
         self.seen: list[set[str]] = []
 
     async def chat(self, messages, tools, *, deadline_ms):
-        del messages, deadline_ms
+        del deadline_ms
         available = {tool.name for tool in tools}
         self.seen.append(available)
         if not self.script:
             return LLMReply(content="done")
         step = self.script.pop(0)
+        if callable(step):
+            # Some tools need a value the runtime only produces at turn time (the
+            # message id behind a fact's provenance), so a step may be a function of
+            # the conversation.
+            step = step(messages)
         if isinstance(step, str):
             return LLMReply(content=step)
         if step.name not in available:
@@ -170,9 +178,14 @@ async def test_second_turn_in_a_thread_reroutes_to_the_right_specialist(
         task_id = (await session.execute(select(Task))).scalars().one().id
 
     thread = f"thread-reroute-{task_id}"
-    shell_turn = await runtime.turn(ctx(db, thread_id=thread), "run echo hello")
-    assert shell_turn.approval is None
-    assert shell_turn.events[0]["name"] == "shell"
+    # Turn one lands on the supervisor (memory). Turn two must still be able to reach
+    # the scheduler's task_delete: the point of the test is the reroute, not the tool.
+    first_turn = await runtime.turn(ctx(db, thread_id=thread), "remember that I live in KL")
+    assert first_turn.events and first_turn.events[0]["name"] in {
+        "memory_write_fact",
+        "memory_search",
+        "task_list",
+    }, first_turn.events
 
     paused = await runtime.turn(ctx(db, thread_id=thread), f"delete task {task_id}")
     assert paused.approval is not None, paused.answer
@@ -200,17 +213,7 @@ async def test_budget_ceiling_refuses_external_tools_before_any_approval(
 
     monkeypatch.setenv("MONTHLY_BUDGET_USD", "1")
     reset_settings_cache()
-    async with db_session.session_scope() as session:
-        session.add(
-            PhoneLine(
-                user_id=db["user_id"],
-                e164="+60111111111",
-                mode="provisioned",
-                verified_at=datetime.now(UTC),
-                capability_voice_in=True,
-            )
-        )
-    result = await runtime.turn(ctx(db), "call +60123456789")
+    result = await runtime.turn(ctx(db), "send a telegram message to 424242 saying hi")
     assert result.approval is None
     assert result.events and result.events[0]["ok"] is False
     assert "ceiling" in str(result.events[0]["detail"]).lower()
@@ -250,3 +253,88 @@ async def test_zh_tw_turn_is_language_pure(db: dict[str, str], runtime: Runtime)
     result = await runtime.turn(ctx(db, lang="zh-TW"), "記住我住在吉隆坡")
     assert result.answer
     assert is_pure(result.answer, Lang.ZH_TW), result.answer
+
+
+async def test_a_fact_typed_by_the_operator_is_actually_stored(
+    db: dict[str, str], tmp_path: Path
+) -> None:
+    """The memory path, proven with a client that plans a real memory_write_fact.
+
+    Before D-45 the router never returned "supervisor", so memory_write_fact was in a
+    live allowlist no turn could reach: the agent could not remember anything and the
+    Memory panel stayed at 0 facts forever. The zh-TW purity test still passed through
+    all of that, because the stub's "tool not available" refusal is itself
+    language-pure - a test that measured the wrong thing.
+    """
+    from apps.api.db.models import MemoryFact
+
+    # The fact needs provenance: source_message_id must point at a real message,
+    # which the runtime writes before the model runs.
+    def plan(messages: Any) -> ToolCall:
+        # The model is given the message id in the system prompt and must echo it back:
+        # that is what "mandatory provenance" means in practice.
+        system = next((m.content for m in messages if m.role == "system"), "")
+        message_id = re.search(r"message_id=(\S+)", system)
+        assert message_id, "the system prompt must carry message_id"
+        return ToolCall(
+            name="memory_write_fact",
+            args={
+                "subject": "operator",
+                "predicate": "lives_in",
+                "object": "Kuala Lumpur",
+                "source_message_id": message_id.group(1),
+            },
+        )
+
+    client = ScriptedClient([plan])
+    rt = Runtime(client=client, checkpoint_path=tmp_path / "memory.sqlite")
+    await rt.start()
+    try:
+        turn = await rt.turn(ctx(db, thread_id="thread-memory"), "remember that I live in KL")
+    finally:
+        await rt.stop()
+
+    actions = [e for e in turn.events if e["type"] == "tool"]
+    assert actions and actions[0]["name"] == "memory_write_fact"
+    assert actions[0]["ok"] is True, actions[0]
+
+    async with db_session.session_scope() as session:
+        facts = (await session.execute(select(MemoryFact))).scalars().all()
+    assert [(f.subject, f.predicate, f.object) for f in facts] == [
+        ("operator", "lives_in", "Kuala Lumpur")
+    ]
+
+    # And the supervisor must have been the specialist on that turn: memory is its
+    # tool, so "the tool ran" is only possible if routing reached it.
+    assert "memory_write_fact" in client.seen[0]
+
+
+async def test_recall_can_read_back_the_fact_it_just_wrote(
+    db: dict[str, str], tmp_path: Path
+) -> None:
+    from apps.api.db.models import MemoryFact
+
+    async with db_session.session_scope() as session:
+        session.add(
+            MemoryFact(
+                id="fact-1",
+                user_id=db["user_id"],
+                subject="operator",
+                predicate="lives_in",
+                object="Kuala Lumpur",
+                confirmed=True,
+            )
+        )
+
+    client = ScriptedClient([ToolCall(name="memory_search", args={"query": "Kuala Lumpur"})])
+    rt = Runtime(client=client, checkpoint_path=tmp_path / "recall.sqlite")
+    await rt.start()
+    try:
+        turn = await rt.turn(ctx(db, thread_id="thread-recall"), "what do you know about me")
+    finally:
+        await rt.stop()
+
+    actions = [e for e in turn.events if e["type"] == "tool"]
+    assert actions and actions[0]["name"] == "memory_search"
+    assert actions[0]["ok"] is True
+    assert "Kuala Lumpur" in str(actions[0]["detail"])

@@ -204,7 +204,7 @@ async def _conversations(session: Any, user_id: str, now: datetime) -> list[dict
     ]
 
 
-def _tools() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _tools() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, str]]]:
     registry = build_registry()
     tools: list[dict[str, Any]] = []
     for tool in sorted(registry.all(), key=lambda item: item.name):
@@ -221,12 +221,17 @@ def _tools() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         {
             "name": name,
             "label": SPECIALIST_LABELS.get(name, name.title()),
-            "tools": len(names),
-            "tool_names": sorted(names),
+            # Reachable tools only: a count that includes a withheld capability tells
+            # the operator the executor can run a shell, which it cannot.
+            "tools": len([t for t in registry.for_specialist(name)]),
+            "tool_names": sorted(t.name for t in registry.for_specialist(name)),
         }
-        for name, names in SPECIALIST_TOOLS.items()
+        for name in SPECIALIST_TOOLS
     ]
-    return tools, specialists
+    withheld = [
+        {"name": name, "reason": reason} for name, reason in sorted(registry.withheld.items())
+    ]
+    return tools, specialists, withheld
 
 
 @router.get("/overview")
@@ -247,7 +252,7 @@ async def overview(user_id: str = Depends(require_session)) -> dict[str, Any]:
             select(func.coalesce(func.sum(CostLedgerRow.usd), 0)).where(CostLedgerRow.ts >= start),
         )
 
-    tools, specialists = _tools()
+    tools, specialists, withheld = _tools()
     by_risk: dict[str, int] = {level.value: 0 for level in RiskLevel}
     for tool in tools:
         by_risk[str(tool["risk"])] += 1
@@ -284,6 +289,9 @@ async def overview(user_id: str = Depends(require_session)) -> dict[str, Any]:
         "specialists": specialists,
         "tools": tools,
         "tools_by_risk": by_risk,
+        # Published so the System panel can say what this build cannot do, instead of
+        # a tool count that quietly implies a sandbox exists.
+        "withheld_tools": withheld,
         "llm": {
             "provider": settings.llm_provider,
             "configured": settings.llm_configured,

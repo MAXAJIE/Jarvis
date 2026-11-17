@@ -243,8 +243,18 @@ Rules for a new tool:
 | `memory_fact_confirm` | WRITE | auto | implements T8's "confirmed" column |
 | `delegate` | READ | auto | registered Tool; propagates taint (D-37) |
 
-Total: **28 tools**. The eight rows above were required by PLANBOOK §3.4/§7.3 but absent
-from the original inventory; D-37 records the change.
+Total: **28 approved**, of which **22 are registered and runnable** (D-37 records the
+inventory change; D-45 records the split). The six that this build cannot run are withheld
+from the registry entirely, so no planner is shown a capability that can only fail:
+
+| Withheld | Why | Unblocked by |
+|---|---|---|
+| `shell`, `python_run` | no sandbox runner (needs Docker) | `SANDBOX_IMAGE` + a real runner |
+| `browser_open`, `browser_click`, `browser_extract` | same | same |
+| `call_place` | no TwiML / media-stream handler: a call would connect to silence | `POST /webhooks/twilio/voice` + media stream |
+
+`build_registry()` filters `tools/registry.py:WITHHELD`; `/api/system/overview` publishes the
+list and both the Tools and AI Core panels show it.
 
 ---
 

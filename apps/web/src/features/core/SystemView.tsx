@@ -89,6 +89,18 @@ export function SystemView({ overview }: { overview: Overview }) {
             <div>{llm.provider}</div>
           </div>
           <div>
+            <div className="text-[0.68rem] tracking-[0.14em] text-[var(--color-mute)]">
+              WITHHELD
+            </div>
+            <div className={overview.withheld_tools.length ? "text-amber-200" : ""}>
+              {overview.withheld_tools.length
+                ? `${overview.withheld_tools.length}: ${overview.withheld_tools
+                    .map((tool) => tool.name)
+                    .join(", ")}`
+                : "none"}
+            </div>
+          </div>
+          <div>
             <div className="text-[0.68rem] tracking-[0.14em] text-[var(--color-mute)]">MODEL</div>
             <div>{llm.model}</div>
           </div>

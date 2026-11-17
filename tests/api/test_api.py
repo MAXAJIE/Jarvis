@@ -97,8 +97,11 @@ def test_overview_feeds_the_command_center_from_real_rows(
     assert body["counters"]["facts"] == 0
     assert body["budget"]["ceiling_usd"] == 20.0
     assert body["budget"]["remaining_usd"] <= 8.2
-    assert len(body["tools"]) == 28
-    assert sum(body["tools_by_risk"].values()) == 28
+    # 22 runnable tools; the 6 this build cannot run are reported separately rather
+    # than advertised as available.
+    assert len(body["tools"]) == 22
+    assert sum(body["tools_by_risk"].values()) == 22
+    assert len(body["withheld_tools"]) == 6
     # No speech keys here, so the voice transport must report itself unavailable
     # rather than advertise a loop that cannot run.
     assert body["voice"]["stt_ready"] is False

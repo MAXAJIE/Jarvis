@@ -152,6 +152,16 @@ def _plan(text: str, message_id: str = "") -> list[ToolCall]:
             )
         return plan
 
+    # The stub had no plan for telegram at all, so the one messaging tool the build
+    # can actually run was unreachable from the offline profile.
+    if match := re.search(r"telegram[^\d]*(\d{4,}).*?(?:saying|that|:)\s*(.+)$", text, re.I | re.S):
+        return [
+            ToolCall(
+                name="telegram_send",
+                args={"chat_id": match.group(1), "text": match.group(2).strip()[:400]},
+            )
+        ]
+
     if match := re.search(r"(?:fetch|read|open)\s+(https?://\S+)", text):
         return [ToolCall(name="web_fetch", args={"url": match.group(1)})]
 

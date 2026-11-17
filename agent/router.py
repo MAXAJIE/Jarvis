@@ -20,11 +20,30 @@ SCHEDULE = re.compile(r"\b(task|todo|to-do|plan|remind|calendar|schedule|week|to
 RESEARCH = re.compile(r"\b(fetch|read|url|http|web|page|research|search|note|document)\b", re.I)
 EXECUTE = re.compile(r"\b(run|shell|python|script|browser|scrape|file)\b", re.I)
 CALL_NUMBER = re.compile(r"\+[1-9]\d{7,14}")
+REMIND = re.compile(r"\b(remind|reminder)\b", re.I)
+
+# Supervisor owns memory writes and delegation. Without this branch the router never
+# returned "supervisor", so memory_write_fact / memory_fact_confirm / delegate sat in
+# a live allowlist that no turn could reach: the agent could not remember anything and
+# the Memory panel would stay at 0 facts forever (D-45).
+SUPERVISE = re.compile(
+    r"(\bremember\s+(that|this|i|my)\b"
+    r"|\bmemorise\b|\bmemorize\b"
+    r"|\bnote\s+that\b|\bkeep\s+in\s+mind\b"
+    r"|\bforget\s+(that|my)\b"
+    r"|\bwhat\s+do\s+you\s+(know|remember)\b"
+    r"|\bdelegate\b|\bsecond\s+opinion\b|\banother\s+model\b)",
+    re.I,
+)
 
 
 def route_specialist(text: str) -> str:
     if CALL_NUMBER.search(text):
         return "comms"
+    # Before the others: "remember that I live in KL" is a memory write, while
+    # "remind me at 9" is a task, and the schedule regex matches both.
+    if SUPERVISE.search(text) and not REMIND.search(text):
+        return "supervisor"
     if COMMS.search(text):
         return "comms"
     if EXECUTE.search(text):

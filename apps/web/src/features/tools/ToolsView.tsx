@@ -77,6 +77,26 @@ export function ToolsView({ overview, query }: { overview: Overview; query: stri
         {rows.length === 0 ? (
           <p className="text-[0.72rem] text-[var(--color-mute)]">No tool matches that filter.</p>
         ) : null}
+
+        {overview.withheld_tools.length ? (
+          <div className="mt-3 rounded border border-amber-700/40 bg-amber-500/5 p-2.5">
+            <div className="text-[0.6rem] tracking-[0.16em] text-amber-200">
+              WITHHELD FROM THIS BUILD ({overview.withheld_tools.length})
+            </div>
+            <ul className="mt-1.5 space-y-1">
+              {overview.withheld_tools.map((tool) => (
+                <li key={tool.name} className="text-[0.68rem] leading-relaxed">
+                  <code className="text-amber-200">{tool.name}</code>{" "}
+                  <span className="text-[var(--color-mute)]">— {tool.reason}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-1.5 text-[0.62rem] leading-relaxed text-[var(--color-mute)]">
+              Not offered to the model, not counted in the totals above. A capability that can only
+              fail is worse than one that is absent.
+            </p>
+          </div>
+        ) : null}
       </div>
     </div>
   );

@@ -8,14 +8,16 @@ rule book.
 
 ## What runs today
 
-| Works, verified by a test | Not implemented or unverified |
+| Works, verified by a test | Not implemented |
 |---|---|
-| Tool registry (28 tools), risk levels, taint, approval rules | Real phone calls (needs Twilio + a verified line) |
-| LangGraph turn loop with approval `interrupt()` + resume across processes | Gmail read/send (needs OAuth) |
-| Budget guard on total spend, incl. fixed-cost floor | Telegram (needs a bot token) |
-| TOTP + password login, signed session cookie, rate limit | Voice push-to-talk (needs Deepgram + Azure) |
-| Tasks, memory facts, workspace files, dashboard metrics | Sandbox runner (week 7; tools refuse) |
-| WebSocket chat + React UI | Vector RAG (needs pgvector) |
+| Tool registry: 22 runnable tools, risk levels, taint, approval rules | Sandbox runner — **6 tools withheld**, not registered (needs Docker) |
+| LangGraph turn loop with approval `interrupt()` + resume across processes | Outbound phone calls — `call_place` withheld (no TwiML handler) |
+| Budget guard on total spend, incl. fixed-cost floor | Inbound calls and `POST /webhooks/twilio/voice` |
+| TOTP + password login, signed session cookie, rate limit | Telegram **inbound** (`POST /webhooks/telegram`); outbound works |
+| Tasks, memory facts (router now reaches the supervisor), workspace files | Scheduled delivery: RRULE is stored, nothing fires it |
+| WebSocket chat **and voice** (`/ws/voice`, Deepgram STT + TTS) | Gmail/Calendar: needs an OAuth token exchange (`scripts/google_auth.py`) |
+| Provider table with fallback chain (OpenRouter, Groq, Gemini, …) | Vector RAG: no ingestion, keyword only (needs pgvector) |
+| React command-center UI, honest about what is off | PWA, `/api/export`, `/api/erase` (§8.1) |
 | Alembic migration that applies from empty | `docker compose` and Caddy (no Docker here) |
 
 `/api/health` returns **503** and names every missing component. That is the
@@ -95,7 +97,7 @@ the number is measured rather than claimed.
 ```bash
 uv run ruff check . && uv run ruff format --check .
 uv run mypy agent tools packages          # --strict is configured in pyproject
-uv run pytest -q                          # 42 tests
+uv run pytest -q                          # 86 tests
 uv run pytest tests/unit/test_policy.py --cov=agent.policy   # 100 % required
 uv run alembic upgrade head
 ```
