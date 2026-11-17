@@ -71,12 +71,11 @@ export function Sidebar({
           <Waveform state="idle" bars={26} />
           <p className="text-[0.68rem] leading-relaxed text-[var(--color-mute)]">
             {voiceReady ? (
-              "Speech keys present. The streaming turn lands in W5."
+              "Speech is live: Deepgram hears you, Aura answers. One utterance per turn, English."
             ) : speechMissing.length === 0 ? (
               <>
                 Ears and mouth are configured ({overview?.voice.stt} in, {overview?.voice.tts} out).
-                The turn that connects them is W5 and not built, so the orb stays dormant. Typing
-                works now.
+                Press the orb and speak; the reply is spoken back. Typing works too.
               </>
             ) : (
               <>
@@ -86,7 +85,7 @@ export function Sidebar({
                     {name}
                   </code>
                 ))}
-                Typing works now; the orb stays dormant until the streaming turn (W5) exists.
+                Typing works now; the orb waits for both keys.
               </>
             )}
           </p>

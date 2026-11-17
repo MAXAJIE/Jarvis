@@ -18,7 +18,7 @@ from agent.runtime import Runtime, settings_guard
 from apps.api.config import ensure_secret_key, get_settings
 from apps.api.db import session as db_session
 from apps.api.db.models import Base
-from apps.api.routes import approvals, auth_routes, chat, metrics, system, tasks
+from apps.api.routes import approvals, auth_routes, chat, metrics, system, tasks, voice
 
 WEB_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
 
@@ -66,6 +66,7 @@ def create_app() -> FastAPI:
     ):
         app.include_router(router)
     app.include_router(chat.router)
+    app.include_router(voice.router)
 
     if WEB_DIST.exists():
         app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")

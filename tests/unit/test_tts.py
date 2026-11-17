@@ -140,19 +140,27 @@ async def test_an_http_error_carries_the_provider_explanation(
         await speak("hello")
 
 
-def test_the_ui_is_never_told_the_voice_loop_is_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_transport_readiness_tracks_both_halves(monkeypatch: pytest.MonkeyPatch) -> None:
+    # transport_ready is a statement about this process: the route exists, so it is
+    # true exactly when both keys are. It must never be true on a half-configured
+    # system, and never false when a working loop is sitting right there.
     _env(
         monkeypatch,
         TTS_PROVIDER="elevenlabs",
         ELEVENLABS_API_KEY="el-test",
         DEEPGRAM_API_KEY="dg-test",
     )
-    status = voice_status()
-    assert status["tts_ready"] is True
-    assert status["stt_ready"] is True
-    assert status["free_chars_per_month"] == 10_000
-    # Both halves configured still does not make the streaming turn exist.
-    assert status["transport_ready"] is False
+    ready = voice_status()
+    assert ready["tts_ready"] is True
+    assert ready["stt_ready"] is True
+    assert ready["free_chars_per_month"] == 10_000
+    assert ready["transport_ready"] is True
+
+    _env(monkeypatch, ELEVENLABS_API_KEY="", DEEPGRAM_API_KEY="dg-test")
+    assert voice_status()["transport_ready"] is False
+
+    _env(monkeypatch, ELEVENLABS_API_KEY="el-test", DEEPGRAM_API_KEY="")
+    assert voice_status()["transport_ready"] is False
     assert get_settings().tts_configured is True
 
 

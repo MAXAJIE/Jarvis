@@ -22,6 +22,10 @@ DEEPGRAM_SPEAK = "https://api.deepgram.com/v1/speak"
 # here so the ceiling is visible at the point of spend, not discovered later.
 ELEVENLABS_FREE_CHARS_PER_MONTH = 10_000
 
+# VERIFY: Aura pricing, USD per 1000 characters, from memory. Deepgram reports
+# no per-request cost, so every tts row carries meta.unverified_price.
+TTS_USD_PER_1K_CHARS = 0.030
+
 
 @dataclass(frozen=True)
 class Speech:
@@ -145,5 +149,8 @@ def voice_status() -> dict[str, object]:
             if settings.tts_provider == "elevenlabs"
             else None  # deepgram bills against its credit, not a character allowance
         ),
-        "transport_ready": False,
+        # True only because /ws/voice exists and both halves are configured.
+        # It said False for weeks while the route did not exist; that flag is a
+        # statement about this process, not about the operator's keys.
+        "transport_ready": bool(settings.deepgram_api_key) and bool(settings.tts_configured),
     }

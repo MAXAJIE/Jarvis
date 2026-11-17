@@ -1,0 +1,163 @@
+"""The voice protocol, driven frame by frame.
+
+STT and TTS are substituted (no key, no spend, no microphone); everything between
+them is real: auth, the conversation row, the agent turn, the approval branch, and
+the cost rows. What this pins is that a failed stage stops the turn instead of
+carrying on with silence, and that each stage bills into the ledger.
+"""
+
+from __future__ import annotations
+
+import base64
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+from starlette.websockets import WebSocketDisconnect
+
+from apps.api.db import session as db_session
+from apps.api.db.models import CostLedgerRow
+from media.stt import Transcript
+from media.tts import Speech
+from tests.api.test_api import login
+
+
+async def _asr(audio: bytes, mime: str = "audio/webm", lang: str = "en") -> Transcript:
+    del mime, lang
+    text = "list my tasks" if audio != b"silence" else ""
+    return Transcript(text=text, confidence=0.97, seconds=2.5, provider="deepgram", model="nova-3")
+
+
+async def _say(text: str, lang: str = "en") -> Speech:
+    del text, lang
+    return Speech(
+        audio=b"ID3fake", mime="audio/mpeg", provider="deepgram", voice="aura-2-thalia-en"
+    )
+
+
+def test_voice_turn_transcribes_answers_and_speaks(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    login(client, monkeypatch)
+    monkeypatch.setattr("apps.api.routes.voice.transcribe", _asr)
+    monkeypatch.setattr("apps.api.routes.voice.speak", _say)
+
+    with client.websocket_connect("/ws/voice") as ws:
+        ready = ws.receive_json()
+        assert ready["type"] == "ready"
+        assert ready["thresholds"] == {"stt": "deepgram", "tts": "deepgram"}
+
+        ws.send_json({"type": "audio_start", "mime": "audio/webm;codecs=opus"})
+        assert ws.receive_json() == {"type": "listening"}
+        ws.send_bytes(b"\x1aE\xdf\xa3fake-opus")
+        ws.send_json({"type": "audio_end"})
+
+        heard = ws.receive_json()
+        assert heard["type"] == "transcript"
+        assert heard["text"] == "list my tasks"
+        assert heard["confidence"] == 0.97
+
+        turn = ws.receive_json()
+        assert turn["type"] == "turn"
+        assert turn["answer"]
+
+        speech = ws.receive_json()
+        assert speech["type"] == "speech"
+        assert speech["mime"] == "audio/mpeg"
+        assert base64.b64decode(speech["data"]) == b"ID3fake"
+
+
+def test_empty_audio_is_refused_before_any_turn(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    login(client, monkeypatch)
+    monkeypatch.setattr("apps.api.routes.voice.transcribe", _asr)
+    monkeypatch.setattr("apps.api.routes.voice.speak", _say)
+
+    with client.websocket_connect("/ws/voice") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "audio_end"})
+        frame = ws.receive_json()
+        assert frame["type"] == "error"
+        assert frame["stage"] == "stt"
+        assert "no audio" in frame["message"]
+
+
+def test_silence_is_reported_as_heard_nothing_not_as_an_empty_turn(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    login(client, monkeypatch)
+    monkeypatch.setattr("apps.api.routes.voice.transcribe", _asr)
+    monkeypatch.setattr("apps.api.routes.voice.speak", _say)
+
+    with client.websocket_connect("/ws/voice") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "audio_start"})
+        ws.receive_json()
+        ws.send_bytes(b"silence")
+        ws.send_json({"type": "audio_end"})
+        assert ws.receive_json()["text"] == ""
+        frame = ws.receive_json()
+        assert frame["type"] == "error"
+        assert "heard nothing" in frame["message"]
+
+
+def test_a_failed_transcription_stops_the_turn_and_is_billed(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    login(client, monkeypatch)
+
+    async def _boom(audio: bytes, mime: str = "audio/webm", lang: str = "en") -> Transcript:
+        raise RuntimeError("deepgram stt http 500: upstream")
+
+    monkeypatch.setattr("apps.api.routes.voice.transcribe", _boom)
+    monkeypatch.setattr("apps.api.routes.voice.speak", _say)
+
+    with client.websocket_connect("/ws/voice") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "audio_start"})
+        ws.receive_json()
+        ws.send_bytes(b"audio")
+        ws.send_json({"type": "audio_end"})
+        frame = ws.receive_json()
+        assert frame["type"] == "error"
+        assert frame["stage"] == "stt"
+        assert "upstream" in frame["message"]
+
+
+def test_voice_refuses_anonymous() -> None:
+    from apps.api.main import create_app
+
+    with (
+        TestClient(create_app()) as anon,
+        pytest.raises(WebSocketDisconnect),
+        anon.websocket_connect("/ws/voice") as ws,
+    ):
+        ws.receive_json()
+
+
+@pytest.mark.anyio
+async def test_each_stage_writes_its_own_cost_row(client: TestClient) -> None:
+    """stt bills seconds, tts bills characters; both mark the price unverified."""
+    from apps.api.routes.voice import _record_stt, _record_tts
+
+    await _record_stt(12, 2.5, "c-test", ok=True)
+    await _record_tts(40, "c-test", ok=True)
+
+    async with db_session.session_scope() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(CostLedgerRow).order_by(CostLedgerRow.id.desc()).limit(2)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    kinds = {row.kind for row in rows}
+    assert kinds == {"stt", "tts"}
+    for row in rows:
+        assert row.meta is not None and row.meta["unverified_price"] is True
+    tts_row = next(row for row in rows if row.kind == "tts")
+    assert tts_row.units == 40
+    assert str(tts_row.usd) == "0.001200"

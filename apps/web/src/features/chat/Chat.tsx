@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api, type ApprovalRequest, type Turn } from "../../lib/api";
+import { VoiceSession, type VoiceFrame, type VoiceState } from "../../lib/voice";
 import { ChatSocket, type ServerFrame } from "../../lib/ws";
 import { Orb, Waveform } from "../core/Orb";
 
@@ -52,6 +53,8 @@ export default function Chat({
   const [provider, setProvider] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
+  const voiceRef = useRef<VoiceSession | null>(null);
   const socketRef = useRef<ChatSocket | null>(null);
   const langRef = useRef<Lang>(lang);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -108,6 +111,52 @@ export default function Chat({
     socketRef.current = socket;
     socket.connect();
     return () => socket.close();
+  }, []);
+
+  // The voice socket is created once and kept: reconnecting per utterance would
+  // re-open the conversation on every press, which is the bug the typed socket
+  // already had to fix.
+  useEffect(() => {
+    const session = new VoiceSession(
+      () => stored(CONVERSATION_KEY),
+      (frame: VoiceFrame) => {
+        if (frame.type === "transcript") {
+          if (!frame.text) return;
+          setBubbles((current) => [
+            ...current,
+            { id: nextId++, role: "user", text: frame.text },
+          ]);
+          return;
+        }
+        if (frame.type === "turn") {
+          setBubbles((current) => [
+            ...current,
+            {
+              id: nextId++,
+              role: "assistant",
+              text: frame.answer || (frame.approval ? "Waiting for your approval." : "(no answer)"),
+              events: frame.events.map((event) => ({ name: event.name ?? "", ok: event.ok ?? false })),
+              approval: frame.approval as ApprovalRequest | null,
+              tainted: frame.tainted,
+            },
+          ]);
+          if (frame.approval) onDecided();
+          return;
+        }
+        if (frame.type === "speech") setNotice(null);
+      },
+      setVoiceState,
+      (message) => {
+        setVoiceState("idle");
+        setBubbles((current) => [...current, { id: nextId++, role: "system", text: message }]);
+      },
+    );
+    voiceRef.current = session;
+    return () => {
+      session.close();
+      voiceRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -177,14 +226,47 @@ export default function Chat({
     if (next === "typing") window.setTimeout(() => inputRef.current?.focus(), 0);
   }
 
-  function pressOrb() {
-    if (voiceReady) {
-      setNotice("Voice transport ships in W5; the keys are present but the loop is not built.");
-    } else {
+  async function pressOrb() {
+    if (!voiceReady || !voiceRef.current) {
       setNotice(voiceHint);
+      changeMode("typing");
+      return;
     }
-    changeMode("typing");
+    setNotice(null);
+    const session = voiceRef.current;
+    if (voiceState === "recording") {
+      session.stop();
+      return;
+    }
+    if (voiceState === "thinking" || voiceState === "speaking") return;
+    try {
+      await session.record();
+    } catch (error) {
+      // A denied microphone is a permission problem the operator can fix, not a
+      // silent no-op: say so, and leave typing available.
+      const blocked =
+        error instanceof DOMException &&
+        (error.name === "NotAllowedError" || error.name === "SecurityError");
+      const message = blocked
+        ? "Microphone blocked. Allow mic access for this site, or type instead."
+        : error instanceof Error
+          ? `Microphone unavailable: ${error.message}`
+          : "Microphone unavailable.";
+      setBubbles((current) => [...current, { id: nextId++, role: "system", text: message }]);
+      setVoiceState("idle");
+    }
   }
+
+  const talkLabel =
+    voiceState === "recording"
+      ? "LISTENING · TAP TO STOP"
+      : voiceState === "thinking"
+        ? "HEARD YOU · THINKING"
+        : voiceState === "speaking"
+          ? "SPEAKING · TAP TO INTERRUPT"
+          : voiceState === "connecting"
+            ? "CONNECTING"
+            : "TAP TO TALK";
 
   async function decide(id: string, decision: "approved" | "rejected") {
     const body = await api<{ decision: string; turn: Turn | null }>(`/api/approvals/${id}/decide`, {
@@ -249,21 +331,38 @@ export default function Chat({
       {mode === "talking" ? (
         <div className="flex shrink-0 flex-col items-center gap-2 border-b border-[var(--color-line)] bg-[radial-gradient(600px_200px_at_50%_0%,rgba(34,211,238,0.12),transparent)] px-4 py-4">
           <Orb
-            state={voiceReady ? "idle" : "blocked"}
-            subtitle={voiceReady ? "Voice loop lands in W5" : voiceHint}
-            onClick={pressOrb}
+            state={!voiceReady ? "blocked" : voiceState === "idle" ? "idle" : "live"}
+            subtitle={
+              !voiceReady
+                ? voiceHint
+                : voiceState === "recording"
+                  ? "Listening through Deepgram"
+                  : voiceState === "speaking"
+                    ? "Speaking through Deepgram Aura"
+                    : "Tap to speak"
+            }
+            onClick={() => void pressOrb()}
             size={132}
           />
           <div className="text-center text-[0.66rem] leading-relaxed text-[var(--color-mute)]">
             <div className="tracking-[0.24em] text-cyan-100">
-              {voiceReady ? "TALK TO JARVIS" : "VOICE OFFLINE"}
+              {voiceReady ? talkLabel : "VOICE OFFLINE"}
             </div>
-            <div className="mt-0.5 max-w-md">{voiceReady ? "Keys present — the streaming turn ships in W5." : voiceHint}</div>
+            <div className="mt-0.5 max-w-md">
+              {voiceReady
+                ? "Press, speak, press again. One utterance per turn, English only for now."
+                : voiceHint}
+            </div>
           </div>
-          <Waveform state="idle" bars={44} />
-          <button type="button" className="btn" onClick={() => changeMode("typing")}>
-            Type instead
-          </button>
+          <Waveform state={voiceState === "idle" || !voiceReady ? "idle" : "live"} bars={44} />
+          <div className="flex gap-2">
+            <button type="button" className="btn" onClick={() => void pressOrb()}>
+              {voiceState === "recording" ? "Stop & send" : "Talk"}
+            </button>
+            <button type="button" className="btn" onClick={() => changeMode("typing")}>
+              Type instead
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -353,7 +452,7 @@ export default function Chat({
           onChange={(event) => setDraft(event.target.value)}
           placeholder={
             mode === "talking"
-              ? "Type your message (voice ships in W5)"
+              ? "Type your message (voice is one tap away)"
               : lang === "zh-TW"
                 ? "打字或者講嘢…"
                 : "Type a message…"

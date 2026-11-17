@@ -71,8 +71,24 @@ python -m scripts.check_voice "Jarvis online."      # writes var/voice-sample.mp
 python -m scripts.check_voice "我而家可以講嘢。"     # refuses until ElevenLabs is set
 ```
 
-The streaming voice turn (microphone in, barge-in) is W5 and not built:
-`/api/system/overview` reports `voice.transport_ready: false`.
+### Talking to it
+
+The conversation view opens in voice mode. Press **Talk**, speak, press again: one
+utterance per turn, English, Deepgram listening (nova-3) and Deepgram speaking
+(Aura). The reply is played back in the browser.
+
+```bash
+python -m scripts.check_voice_loop "list my tasks"
+```
+
+That drives `/ws/voice` for real — synthesize an utterance, push it through the
+socket the way the browser does, and check that a transcript, an agent turn and
+spoken audio all come back. It writes `var/voice-reply.mp3`.
+
+Not built yet: streaming input and barge-in (the current loop records a whole
+utterance before sending it). The turn latency is reported on the wire as
+`latency_ms`; a free model lands around 8 s against the 3 s target, which is why
+the number is measured rather than claimed.
 `,
 ## Gates
 

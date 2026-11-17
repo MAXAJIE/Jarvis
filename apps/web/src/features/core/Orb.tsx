@@ -6,7 +6,7 @@ export type VoiceState = "live" | "idle" | "blocked";
  * The core orb.
  *
  * It animates only when the system is genuinely listening. Today that is never:
- * the streaming voice turn ships in W5, and DEEPGRAM_API_KEY / AZURE_SPEECH_KEY
+ * the voice keys are missing. A pulsing orb with no microphone behind it would
  * are empty, so the orb sits dormant and says why. An orb that pulses to look
  * alive would be the same lie as a green health check with no keys configured.
  */

@@ -81,7 +81,7 @@ export function CommandCenter({
             state={voiceReady ? "idle" : "blocked"}
             subtitle={
               voiceReady
-                ? "Speech keys present; the streaming turn ships in W5"
+                ? "Press to talk — one utterance per turn, English for now"
                 : "Voice offline: DEEPGRAM_API_KEY and AZURE_SPEECH_KEY are empty"
             }
             onClick={() => onSection("chat")}

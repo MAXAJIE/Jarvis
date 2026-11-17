@@ -6,6 +6,7 @@ A blank value means "not configured". Tools that need it refuse with
 
 from __future__ import annotations
 
+import os
 import secrets
 from decimal import Decimal
 from pathlib import Path
@@ -16,6 +17,12 @@ from providers.catalog import CATALOG, ProviderSpec
 
 ENV_FILE = Path(".env")
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _env_file() -> str:
+    """Which file to read defaults from. JARVIS_ENV_FILE lets the test suite point
+    at a file that does not exist, so a developer's real keys never reach a test."""
+    return os.environ.get("JARVIS_ENV_FILE", str(ENV_FILE))
 
 
 def _catalog_names() -> set[str]:
@@ -57,6 +64,7 @@ class Settings(BaseSettings):
     # speech
     tts_provider: str = "deepgram"  # deepgram (en) | elevenlabs (multilingual) | azure
     deepgram_api_key: str = ""
+    deepgram_stt_model: str = "nova-3"
     deepgram_lang_en: str = "en"
     deepgram_lang_zh: str = "zh-TW"
     elevenlabs_api_key: str = ""
@@ -169,7 +177,7 @@ _cached: Settings | None = None
 def get_settings() -> Settings:
     global _cached
     if _cached is None:
-        _cached = Settings()
+        _cached = Settings(_env_file=_env_file())
     return _cached
 
 

@@ -120,6 +120,7 @@ def test_a_fallback_without_a_key_is_skipped_not_fatal(monkeypatch: pytest.Monke
         LLM_PROVIDER="openrouter",
         OPENROUTER_API_KEY="sk-or-test",
         LLM_FALLBACKS="groq,gemini",
+        LLM_MODEL_STRONG="openai/gpt-4o-mini",
         GROQ_API_KEY="",
         GEMINI_API_KEY="",
     )

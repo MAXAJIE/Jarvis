@@ -99,6 +99,9 @@ def test_overview_feeds_the_command_center_from_real_rows(
     assert body["budget"]["remaining_usd"] <= 8.2
     assert len(body["tools"]) == 28
     assert sum(body["tools_by_risk"].values()) == 28
+    # No speech keys here, so the voice transport must report itself unavailable
+    # rather than advertise a loop that cannot run.
+    assert body["voice"]["stt_ready"] is False
     assert body["voice"]["transport_ready"] is False
     assert body["llm"]["configured"] is False
     assert [row["title"] for row in body["timeline"]] == []  # no due date set

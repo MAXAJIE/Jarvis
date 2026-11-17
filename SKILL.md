@@ -100,6 +100,7 @@ the feature "works".
 │   └── web.py                   # web_fetch → always tainted
 ├── media/
 │   ├── audio.py                 # framing, μ-law ↔ PCM for Twilio
+│   ├── stt.py                   # Deepgram nova-3, one utterance in, one sentence out
 │   └── tts.py                   # one sentence → mp3: Deepgram Aura (en), ElevenLabs (multilingual)
 ├── providers/
 │   ├── catalog.py               # provider table: base_url, key_env, default model (adding one = a row)

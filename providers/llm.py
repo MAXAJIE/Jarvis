@@ -37,6 +37,10 @@ PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
 }
 
 
+# Nothing should hold a socket for longer than this, however impatient the caller.
+HTTP_TIMEOUT_FLOOR_S = 25.0
+
+
 class ChatMessage(BaseModel):
     role: Role
     content: str
@@ -564,7 +568,11 @@ class HTTPChatClient:
         if self.provider == "openrouter":
             # Ask for the authoritative per-request cost instead of inferring it.
             payload["usage"] = {"include": True}
-        timeout = max(1.0, deadline_ms / 1000.0)
+        # The caller's deadline is a latency *target*, not an HTTP timeout: a
+        # 3 s voice deadline turned every free reasoning model into a ReadTimeout
+        # mid-turn, which reads to the operator as "voice is broken". Hang up on
+        # something genuinely stalled, and measure the latency instead of guessing.
+        timeout = max(HTTP_TIMEOUT_FLOOR_S, deadline_ms / 1000.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{self.base_url.rstrip('/')}/chat/completions",

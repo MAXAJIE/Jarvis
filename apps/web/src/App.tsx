@@ -73,7 +73,7 @@ export default function App() {
           .join(" and ")} ${
           !overview.data.voice.stt_ready && !overview.data.voice.tts_ready ? "are" : "is"
         } empty. Typing works now.`
-      : "Speech keys are present, but the streaming turn is not wired yet (W5)."
+      : "Voice is available."
     : "Loading voice state…";
 
   /** The shell keeps one poll; panels read the same snapshot. */

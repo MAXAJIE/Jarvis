@@ -30,7 +30,31 @@ def _env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("TWILIO_DEFAULT_LINE_E164", "")
     monkeypatch.setenv("SANDBOX_IMAGE", "")
     monkeypatch.setenv("JARVIS_CHECKPOINT_PATH", str(tmp_path / "checkpoints.sqlite"))
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # Settings reads .env by default; point it at an empty file so the operator's
+    # real provider keys and models cannot reach a test.
+    empty_env = tmp_path / "env.test"
+    empty_env.write_text("", encoding="utf-8")
+    monkeypatch.setenv("JARVIS_ENV_FILE", str(empty_env))
+    # The suite must not see the operator's real .env. Without this, a test that
+    # looked harmless called the live Deepgram API with a real key: the run passed
+    # or failed depending on the machine, and it spent money doing it.
+    for secret in (
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        "GEMINI_API_KEY",
+        "CEREBRAS_API_KEY",
+        "DEEPGRAM_API_KEY",
+        "ELEVENLABS_API_KEY",
+        "AZURE_SPEECH_KEY",
+        "TWILIO_ACCOUNT_SID",
+        "TWILIO_AUTH_TOKEN",
+        "TELEGRAM_BOT_TOKEN",
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "GOOGLE_REFRESH_TOKEN",
+    ):
+        monkeypatch.delenv(secret, raising=False)
     reset_settings_cache()
     yield
     os.environ.pop("JARVIS_TEST_LEAK", None)

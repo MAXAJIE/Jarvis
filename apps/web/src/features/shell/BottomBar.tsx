@@ -47,7 +47,7 @@ export function BottomBar({
           type="button"
           onClick={onTalk}
           className="panel panel-hot flex flex-1 items-center gap-3 px-4 py-1.5 text-left"
-          title={voiceReady ? "Voice loop ships in W5" : "Speech keys are not configured"}
+          title={voiceReady ? "Press to talk (English)" : "Speech keys are not configured"}
         >
           <Waveform state={listening ? "live" : "idle"} bars={18} />
           <span className="flex-1 leading-tight">
@@ -58,7 +58,7 @@ export function BottomBar({
               {listening
                 ? "listening…"
                 : voiceReady
-                  ? "voice loop lands in W5 — click to type"
+                  ? "tap to talk — or click to type"
                   : "voice offline — click to type instead"}
             </span>
           </span>
