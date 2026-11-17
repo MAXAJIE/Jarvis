@@ -1,0 +1,72 @@
+[project]
+name = "jarvis"
+version = "0.1.0"
+description = "Single-user self-hosted personal AI assistant"
+requires-python = "==3.12.*"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "aiosqlite>=0.20",
+    "alembic>=1.14",
+    "langgraph>=0.2.60",
+    "langgraph-checkpoint-sqlite>=2.0",
+    "argon2-cffi>=23.1",
+    "pyotp>=2.9",
+    "itsdangerous>=2.2",
+    "httpx>=0.27",
+    "apscheduler>=3.10",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "types-itsdangerous",
+    "pytest-cov>=7.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent", "tools", "media", "providers", "packages", "apps"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ASYNC", "S", "BLE"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S311"]
+"alembic/versions/*" = ["E501"]
+"providers/llm.py" = ["RUF001", "RUF002", "RUF003"]
+"agent/lang.py" = ["RUF001", "RUF002"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["agent", "tools", "packages"]
+mypy_path = "."
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["apps.*", "providers.*", "media.*"]
+follow_imports = "silent"
+disallow_untyped_defs = false
